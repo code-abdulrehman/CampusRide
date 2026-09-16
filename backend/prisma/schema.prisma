@@ -1,0 +1,380 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  STUDENT
+  ADMIN
+  SUPER_ADMIN
+}
+
+enum AccountStatus {
+  ACTIVE
+  SUSPENDED
+}
+
+enum VerificationStatus {
+  PENDING
+  VERIFIED
+  REJECTED
+}
+
+enum VehicleType {
+  SEDAN
+  HATCHBACK
+  SUV
+  VAN
+  MOTORBIKE
+  OTHER
+}
+
+enum RideStatus {
+  OPEN
+  FULL
+  STARTED
+  COMPLETED
+  CANCELLED
+  EXPIRED
+}
+
+enum BookingStatus {
+  REQUESTED
+  ACCEPTED
+  REJECTED
+  CANCELLED
+  CHECKED_IN
+  RIDE_STARTED
+  COMPLETED
+  NO_SHOW
+}
+
+enum RideRequestStatus {
+  OPEN
+  MATCHED
+  EXPIRED
+  CANCELLED
+}
+
+enum ReportReason {
+  DANGEROUS_DRIVING
+  HARASSMENT
+  FAKE_DETAILS
+  NO_SHOW
+  EXCESSIVE_CHARGING
+  MISBEHAVIOR
+  WRONG_PICKUP
+  SPAM
+  OTHER
+}
+
+enum ReportStatus {
+  OPEN
+  RESOLVED
+  DISMISSED
+}
+
+enum NotificationType {
+  BOOKING_REQUEST
+  BOOKING_ACCEPTED
+  BOOKING_REJECTED
+  BOOKING_CANCELLED
+  BOOKING_NO_SHOW
+  RIDE_STARTED
+  RIDE_COMPLETED
+  RIDE_CANCELLED
+  VERIFICATION_UPDATED
+  ACCOUNT_STATUS
+  NEW_MATCH
+  GENERAL
+}
+
+model User {
+  id                  String           @id @default(uuid())
+  email               String           @unique
+  passwordHash        String           @map("password_hash")
+  fullName            String           @map("full_name")
+  studentId           String?          @unique @map("student_id")
+  role                Role             @default(STUDENT)
+  avatarKey           String?          @map("avatar_key")
+  mainCampusId        String?          @map("main_campus_id")
+  studentVerified     VerificationStatus @default(PENDING) @map("student_verified")
+  driverVerified      VerificationStatus @default(PENDING) @map("driver_verified")
+  accountStatus       AccountStatus    @default(ACTIVE) @map("account_status")
+  ratingAverage       Float            @default(0) @map("rating_average")
+  completedRidesCount Int              @default(0) @map("completed_rides_count")
+  cancellationCount   Int              @default(0) @map("cancellation_count")
+  noShowCount         Int              @default(0) @map("no_show_count")
+  createdAt           DateTime         @default(now()) @map("created_at")
+  updatedAt           DateTime         @updatedAt @map("updated_at")
+
+  mainCampus         Campus?         @relation("UserMainCampus", fields: [mainCampusId], references: [id])
+  vehicles           Vehicle[]
+  rides              Ride[]          @relation("DriverRides")
+  rideRequests       RideRequest[]
+  bookings           Booking[]
+  sentRatings        Rating[]        @relation("RatingReviewer")
+  receivedRatings    Rating[]        @relation("RatingReviewee")
+  reportsMade        Report[]        @relation("ReportsMade")
+  reportsOnMe        Report[]        @relation("ReportsOnUser")
+  resolvedReports    Report[]        @relation("ResolvedReports")
+  notifications      Notification[]
+  refreshTokens      RefreshToken[]
+  rideLocations      RideLocation[]
+  auditLogs          AuditLog[]
+
+  @@index([email])
+  @@index([studentId])
+  @@index([role, accountStatus])
+  @@map("users")
+}
+
+model Campus {
+  id              String   @id @default(uuid())
+  name            String
+  code            String   @unique
+  address         String
+  latitude        Float
+  longitude       Float
+  securityContact String?  @map("security_contact")
+  openingHour     Int      @default(8) @map("opening_hour")
+  closingHour     Int      @default(20) @map("closing_hour")
+  active          Boolean  @default(true)
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  users              User[]        @relation("UserMainCampus")
+  originRides        Ride[]        @relation("OriginCampuses")
+  destinationRides   Ride[]        @relation("DestinationCampuses")
+  rideRequestOrigins RideRequest[] @relation("RequestOrigin")
+  rideRequestDests   RideRequest[] @relation("RequestDestination")
+
+  @@index([active])
+  @@map("campuses")
+}
+
+model Vehicle {
+  id                 String           @id @default(uuid())
+  ownerId            String           @map("owner_id")
+  vehicleType        VehicleType      @default(SEDAN) @map("vehicle_type")
+  company            String
+  model              String
+  year               Int
+  color              String
+  registrationNumber String           @unique @map("registration_number")
+  totalSeats         Int              @default(5) @map("total_seats")
+  passengerCapacity  Int              @default(4) @map("passenger_capacity")
+  verificationStatus VerificationStatus @default(PENDING) @map("verification_status")
+  active             Boolean          @default(true)
+  createdAt          DateTime         @default(now()) @map("created_at")
+  updatedAt          DateTime         @updatedAt @map("updated_at")
+
+  owner User @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  rides Ride[]
+
+  @@index([registrationNumber])
+  @@index([ownerId])
+  @@index([verificationStatus])
+  @@map("vehicles")
+}
+
+model Ride {
+  id                  String      @id @default(uuid())
+  driverId            String      @map("driver_id")
+  vehicleId           String      @map("vehicle_id")
+  origin              String
+  destination         String
+  originCampusId      String      @map("origin_campus_id")
+  destinationCampusId String      @map("destination_campus_id")
+  departureAt         DateTime    @map("departure_at")
+  expectedArrivalAt   DateTime    @map("expected_arrival_at")
+  availableSeats      Int         @map("available_seats")
+  pricePerSeat        Int         @default(200) @map("price_per_seat")
+  pickupRadiusKm      Float       @default(2) @map("pickup_radius_km")
+  maxDetourMinutes    Int         @default(30) @map("max_detour_minutes")
+  conditions          Json        @default("[]")
+  notes               String?     @db.Text
+  recurring           Boolean     @default(false)
+  recurringDays       Int[]       @default([]) @map("recurring_days")
+  ridePin             String      @unique @map("ride_pin")
+  status              RideStatus  @default(OPEN)
+  version             Int         @default(1)
+  createdAt           DateTime    @default(now()) @map("created_at")
+  updatedAt           DateTime    @updatedAt @map("updated_at")
+
+  driver            User            @relation("DriverRides", fields: [driverId], references: [id])
+  vehicle           Vehicle         @relation(fields: [vehicleId], references: [id])
+  originCampus      Campus          @relation("OriginCampuses", fields: [originCampusId], references: [id])
+  destinationCampus Campus          @relation("DestinationCampuses", fields: [destinationCampusId], references: [id])
+  bookings          Booking[]
+  rideLocations     RideLocation[]
+  ratings           Rating[]
+  reports           Report[]
+
+  @@index([originCampusId, destinationCampusId, departureAt, status])
+  @@index([driverId, departureAt])
+  @@index([status, departureAt])
+  @@map("rides")
+}
+
+model RideRequest {
+  id                  String           @id @default(uuid())
+  studentId           String           @map("student_id")
+  originCampusId      String           @map("origin_campus_id")
+  destinationCampusId String           @map("destination_campus_id")
+  earliestDeparture   DateTime         @map("earliest_departure")
+  latestDeparture     DateTime         @map("latest_departure")
+  requiredArrival     DateTime?        @map("required_arrival")
+  requiredSeats       Int              @default(1) @map("required_seats")
+  maxBudget           Int?             @map("max_budget")
+  maxPickupDistanceKm Float            @default(3) @map("max_pickup_distance_km")
+  status              RideRequestStatus @default(OPEN)
+  createdAt           DateTime         @default(now()) @map("created_at")
+  updatedAt           DateTime         @updatedAt @map("updated_at")
+
+  student            User    @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  originCampus       Campus  @relation("RequestOrigin", fields: [originCampusId], references: [id])
+  destinationCampus  Campus  @relation("RequestDestination", fields: [destinationCampusId], references: [id])
+
+  @@index([originCampusId, destinationCampusId, status])
+  @@index([studentId, status])
+  @@map("ride_requests")
+}
+
+model Booking {
+  id            String        @id @default(uuid())
+  rideId        String        @map("ride_id")
+  passengerId   String        @map("passenger_id")
+  seats         Int           @default(1)
+  status        BookingStatus @default(REQUESTED)
+  checkinPinHash String?      @map("checkin_pin_hash")
+  requestedAt   DateTime      @default(now()) @map("requested_at")
+  acceptedAt    DateTime?     @map("accepted_at")
+  rejectedAt    DateTime?     @map("rejected_at")
+  cancelledAt   DateTime?     @map("cancelled_at")
+  checkedInAt   DateTime?     @map("checked_in_at")
+  noShowAt      DateTime?     @map("no_show_at")
+  completedAt   DateTime?     @map("completed_at")
+  createdAt     DateTime      @default(now()) @map("created_at")
+  updatedAt     DateTime      @updatedAt @map("updated_at")
+
+  ride      Ride  @relation(fields: [rideId], references: [id], onDelete: Cascade)
+  passenger User  @relation(fields: [passengerId], references: [id])
+
+  @@unique([rideId, passengerId])
+  @@index([passengerId, status])
+  @@index([rideId, status])
+  @@map("bookings")
+}
+
+model Rating {
+  id            String   @id @default(uuid())
+  rideId        String   @map("ride_id")
+  reviewerId    String   @map("reviewer_id")
+  revieweeId    String   @map("reviewee_id")
+  overall       Int
+  punctuality   Int
+  behaviour     Int
+  communication Int
+  comment       String?  @map("comment")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  ride     Ride  @relation(fields: [rideId], references: [id], onDelete: Cascade)
+  reviewer User  @relation("RatingReviewer", fields: [reviewerId], references: [id])
+  reviewee User  @relation("RatingReviewee", fields: [revieweeId], references: [id])
+
+  @@unique([rideId, reviewerId, revieweeId])
+  @@index([revieweeId])
+  @@map("ratings")
+}
+
+model Report {
+  id             String       @id @default(uuid())
+  reporterId     String       @map("reporter_id")
+  reportedUserId String?      @map("reported_user_id")
+  rideId         String?      @map("ride_id")
+  reason         ReportReason
+  details        String       @db.Text
+  status         ReportStatus @default(OPEN)
+  adminAction    String?      @map("admin_action")
+  resolvedBy     String?      @map("resolved_by")
+  createdAt      DateTime     @default(now()) @map("created_at")
+  resolvedAt     DateTime?    @map("resolved_at")
+
+  reporter     User     @relation("ReportsMade", fields: [reporterId], references: [id])
+  reportedUser User?    @relation("ReportsOnUser", fields: [reportedUserId], references: [id])
+  ride         Ride?    @relation(fields: [rideId], references: [id])
+  resolver     User?    @relation("ResolvedReports", fields: [resolvedBy], references: [id])
+
+  @@unique([reporterId, reportedUserId, rideId])
+  @@index([status, createdAt])
+  @@map("reports")
+}
+
+model Notification {
+  id        String           @id @default(uuid())
+  userId    String           @map("user_id")
+  type      NotificationType
+  title     String
+  body      String
+  data      Json?
+  readAt    DateTime?        @map("read_at")
+  createdAt DateTime         @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, readAt, createdAt])
+  @@map("notifications")
+}
+
+model RefreshToken {
+  id        String    @id @default(uuid())
+  userId    String    @map("user_id")
+  tokenHash String    @map("token_hash")
+  expiresAt DateTime  @map("expires_at")
+  revokedAt DateTime? @map("revoked_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([tokenHash])
+  @@map("refresh_tokens")
+}
+
+model RideLocation {
+  rideId    String   @map("ride_id")
+  userId    String   @map("user_id")
+  latitude  Float
+  longitude Float
+  accuracy  Float?
+  heading   Float?
+  speed     Float?
+  updatedAt DateTime @map("updated_at")
+
+  ride Ride @relation(fields: [rideId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([rideId, userId])
+  @@map("ride_locations")
+}
+
+model AuditLog {
+  id          String   @id @default(uuid())
+  actorUserId String?  @map("actor_user_id")
+  action      String
+  entityType  String   @map("entity_type")
+  entityId    String   @map("entity_id")
+  metadata    Json?
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  actor User? @relation(fields: [actorUserId], references: [id])
+
+  @@index([entityType, entityId])
+  @@index([actorUserId])
+  @@map("audit_logs")
+}

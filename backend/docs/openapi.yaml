@@ -1,0 +1,1205 @@
+openapi: 3.0.3
+info:
+  title: CampusRide API
+  description: |
+    CampusRide backend: REST API for inter-campus ride sharing.
+
+    Response envelope (all endpoints):
+    - success: `{ "success": true, "data": {...}, "meta": null }`
+    - error: `{ "success": false, "error": { "code": "...", "message": "...", "fields": [...] } }`
+
+    Common error codes: `VALIDATION_ERROR`, `NOT_FOUND`, `UNAUTHORIZED`, `FORBIDDEN`,
+    `EMAIL_TAKEN`, `STUDENT_ID_TAKEN`, `AUTH_INVALID_CREDENTIALS`, `AUTH_TOKEN_INVALID`,
+    `AUTH_REFRESH_REVOKED`, `ACCOUNT_SUSPENDED`, `DRIVER_NOT_VERIFIED`,
+    `VEHICLE_NOT_VERIFIED`, `CAMPUS_NOT_FOUND`, `RIDE_NOT_FOUND`, `RIDE_FULL`,
+    `RIDE_INVALID_STATE`, `BOOKING_NOT_FOUND`, `BOOKING_ALREADY_EXISTS`,
+    `BOOKING_INVALID_STATE`, `INVALID_PIN`, `LOCATION_NOT_ALLOWED`, `RATE_LIMITED`,
+    `INTERNAL_ERROR`.
+
+    Authenticate with `Authorization: Bearer <accessToken>`. Tokens are issued by
+    `POST /auth/login` / `POST /auth/register` and rotated by `POST /auth/refresh`.
+  version: 0.1.0
+  contact:
+    name: CampusRide Team
+servers:
+  - url: http://localhost:3000/api/v1
+    description: Local development
+security:
+  - bearerAuth: []
+tags:
+  - name: Health
+  - name: Auth
+  - name: Users
+  - name: Campuses
+  - name: Vehicles
+  - name: Rides
+  - name: Bookings
+  - name: RideRequests
+  - name: Ratings
+  - name: Reports
+  - name: Notifications
+  - name: Admin
+paths:
+  /health:
+    get:
+      summary: Liveness probe
+      operationId: getHealth
+      tags: [Health]
+      security: []
+      responses:
+        "200":
+          $ref: "#/components/responses/Success"
+  /ready:
+    get:
+      summary: Readiness probe (verifies database connection)
+      operationId: getReady
+      tags: [Health]
+      security: []
+      responses:
+        "200":
+          $ref: "#/components/responses/Success"
+        "503":
+          $ref: "#/components/responses/Error"
+
+  /auth/register:
+    post:
+      summary: Register a student account
+      operationId: registerUser
+      tags: [Auth]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterRequest"
+      responses:
+        "201":
+          $ref: "#/components/responses/Success"
+        "409":
+          $ref: "#/components/responses/Error"
+  /auth/login:
+    post:
+      summary: Log in and receive an access/refresh token pair
+      operationId: loginUser
+      tags: [Auth]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email:
+                  type: string
+                  format: email
+                password:
+                  type: string
+      responses:
+        "200":
+          $ref: "#/components/responses/Success"
+        "401":
+          $ref: "#/components/responses/Error"
+  /auth/refresh:
+    post:
+      summary: Rotate a refresh token for a fresh token pair
+      operationId: refreshTokens
+      tags: [Auth]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refreshToken]
+              properties:
+                refreshToken:
+                  type: string
+      responses:
+        "200":
+          $ref: "#/components/responses/Success"
+        "401":
+          $ref: "#/components/responses/Error"
+  /auth/logout:
+    post:
+      summary: Revoke the supplied refresh token
+      operationId: logoutUser
+      tags: [Auth]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refreshToken]
+              properties:
+                refreshToken:
+                  type: string
+      responses:
+        "200":
+          $ref: "#/components/responses/Success"
+
+  /users/me:
+    get:
+      summary: Get the authenticated user's profile
+      operationId: getMe
+      tags: [Users]
+      responses:
+        "200":
+          $ref: "#/components/responses/Success"
+    patch:
+      summary: Update full name or main campus
+      operationId: updateMe
+      tags: [Users]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                fullName:
+                  type: string
+                  minLength: 2
+                  maxLength: 120
+                mainCampusId:
+                  type: string
+                  format: uuid
+                  nullable: true
+      responses:
+        "200":
+          $ref: "#/components/responses/Success"
+  /users/me/avatar:
+    patch:
+      summary: Set the avatar key (avatar_01 .. avatar_20)
+      operationId: setAvatar
+      tags: [Users]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [avatarKey]
+              properties:
+                avatarKey:
+                  type: string
+                  pattern: ^avatar_\d{2}$
+      responses:
+        "200":
+          $ref: "#/components/responses/Success"
+  /users/me/bootstrap:
+    get:
+      summary: Payload for the app home screen (profile, campuses, notifications)
+      operationId: bootstrap
+      tags: [Users]
+      responses:
+        "200":
+          $ref: "#/components/responses/Success"
+  /users/{userId}/public:
+    get:
+      summary: Get a public profile (name, rating, ride counts)
+      operationId: getPublicProfile
+      tags: [Users]
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/UserIdParam"
+      responses:
+        "200":
+          $ref: "#/components/responses/Success"
+        "404":
+          $ref: "#/components/responses/Error"
+
+  /campuses:
+    get:
+      summary: List active campuses
+      operationId: listCampuses
+      tags: [Campuses]
+      security: []
+      responses:
+        "200":
+          $ref: "#/components/responses/Success"
+  /campuses/{id}:
+    get:
+      summary: Get one campus
+      operationId: getCampus
+      tags: [Campuses]
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      responses:
+        "200":
+          $ref: "#/components/responses/Success"
+        "404":
+          $ref: "#/components/responses/Error"
+
+  /vehicles:
+    post:
+      summary: Register a vehicle for review
+      operationId: createVehicle
+      tags: [Vehicles]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateVehicleRequest"
+      responses:
+        "201":
+          $ref: "#/components/responses/Success"
+  /vehicles/me:
+    get:
+      summary: List the authenticated user's vehicles
+      operationId: listMyVehicles
+      tags: [Vehicles]
+      responses:
+        "200":
+          $ref: "#/components/responses/Success"
+  /vehicles/{vehicleId}:
+    patch:
+      summary: Update an owned vehicle
+      operationId: updateVehicle
+      tags: [Vehicles]
+      parameters:
+        - $ref: "#/components/parameters/VehicleIdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateVehicleRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/Success"
+    delete:
+      summary: Deactivate an owned vehicle
+      operationId: deleteVehicle
+      tags: [Vehicles]
+      parameters:
+        - $ref: "#/components/parameters/VehicleIdParam"
+      responses:
+        "200":
+          $ref: "#/components/responses/Success"
+
+  /rides:
+    post:
+      summary: Publish a ride (verified driver, verified active vehicle)
+      operationId: createRide
+      tags: [Rides]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateRideRequest"
+      responses:
+        "201":
+          $ref: "#/components/responses/Success"
+        "403":
+          $ref: "#/components/responses/Error"
+  /rides/search:
+    get:
+      summary: Search open rides between two campuses on a date, scored by matching
+      operationId: searchRides
+      tags: [Rides]
+      parameters:
+        - name: fromCampusId
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: toCampusId
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: date
+          in: query
+          required: true
+          schema:
+            type: string
+            pattern: ^\d{4}-\d{2}-\d{2}$
+        - name: seats
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 20
+        - name: startTime
+          in: query
+          schema:
+            type: string
+            pattern: ^\d{2}:\d{2}$
+        - name: endTime
+          in: query
+          schema:
+            type: string
+            pattern: ^\d{2}:\d{2}$
+        - name: maxBudget
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+        - name: page
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+        - name: pageSize
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+      responses:
+        "200":
+          $ref: "#/components/responses/Success"
+  /rides/mine:
+    get:
+      summary: List the driver's rides
+      operationId: myRides
+      tags: [Rides]
+      responses:
+        "200":
+          $ref: "#/components/responses/Success"
+  /rides/{rideId}:
+    get:
+      summary: Get a ride detail (participants)
+      operationId: getRide
+      tags: [Rides]
+      parameters:
+        - $ref: "#/components/parameters/RideIdParam"
+      responses:
+        "200":
+          $ref: "#/components/responses/Success"
+    patch:
+      summary: Update an open ride (driver only)
+      operationId: updateRide
+      tags: [Rides]
+      parameters:
+        - $ref: "#/components/parameters/RideIdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateRideRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/Success"
+  /rides/{rideId}/cancel:
+    post:
+      summary: Cancel an open/full ride (driver only)
+      operationId: cancelRide
+      tags: [Rides]
+      parameters:
+        - $ref: "#/components/parameters/RideIdParam"
+      responses:
+        "200":
+          $ref: "#/components/responses/Success"
+  /rides/{rideId}/start:
+    post:
+      summary: Start a ride (driver only)
+      operationId: startRide
+      tags: [Rides]
+      parameters:
+        - $ref: "#/components/parameters/RideIdParam"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                checkinAll:
+                  type: boolean
+                  description: Check in all accepted passengers immediately
+      responses:
+        "200":
+          $ref: "#/components/responses/Success"
+  /rides/{rideId}/complete:
+    post:
+      summary: Complete a started ride (driver only)
+      operationId: completeRide
+      tags: [Rides]
+      parameters:
+        - $ref: "#/components/parameters/RideIdParam"
+      responses:
+        "200":
+          $ref: "#/components/responses/Success"
+  /rides/{rideId}/location/latest:
+    get:
+      summary: Latest driver location for a ride
+      operationId: latestLocation
+      tags: [Rides]
+      parameters:
+        - $ref: "#/components/parameters/RideIdParam"
+      responses:
+        "200":
+          $ref: "#/components/responses/Success"
+
+  /rides/{rideId}/bookings:
+    post:
+      summary: Request a booking on an open ride
+      operationId: createBooking
+      tags: [Bookings]
+      parameters:
+        - $ref: "#/components/parameters/RideIdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [seats]
+              properties:
+                seats:
+                  type: integer
+                  minimum: 1
+                  maximum: 20
+      responses:
+        "201":
+          $ref: "#/components/responses/Success"
+        "409":
+          $ref: "#/components/responses/Error"
+    get:
+      summary: List bookings for a ride (driver)
+      operationId: listRideBookings
+      tags: [Bookings]
+      parameters:
+        - $ref: "#/components/parameters/RideIdParam"
+      responses:
+        "200":
+          $ref: "#/components/responses/Success"
+  /bookings/mine:
+    get:
+      summary: List the passenger's bookings
+      operationId: myBookings
+      tags: [Bookings]
+      responses:
+        "200":
+          $ref: "#/components/responses/Success"
+  /bookings/{id}:
+    get:
+      summary: Get a booking (participants only)
+      operationId: getBooking
+      tags: [Bookings]
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      responses:
+        "200":
+          $ref: "#/components/responses/Success"
+  /bookings/{id}/accept:
+    post:
+      summary: Accept a booking request (driver only; decrements seats atomically)
+      operationId: acceptBooking
+      tags: [Bookings]
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      responses:
+        "200":
+          $ref: "#/components/responses/Success"
+        "409":
+          $ref: "#/components/responses/Error"
+  /bookings/{id}/reject:
+    post:
+      summary: Reject a booking request (driver only)
+      operationId: rejectBooking
+      tags: [Bookings]
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      responses:
+        "200":
+          $ref: "#/components/responses/Success"
+  /bookings/{id}/cancel:
+    post:
+      summary: Cancel a booking (passenger or driver; restores seats)
+      operationId: cancelBooking
+      tags: [Bookings]
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      responses:
+        "200":
+          $ref: "#/components/responses/Success"
+  /bookings/{id}/checkin:
+    post:
+      summary: Check a passenger in with the ride PIN (driver only)
+      operationId: checkinBooking
+      tags: [Bookings]
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [checkinPin]
+              properties:
+                checkinPin:
+                  type: string
+                  description: 4-digit ride PIN shown on the ride detail
+      responses:
+        "200":
+          $ref: "#/components/responses/Success"
+        "400":
+          $ref: "#/components/responses/Error"
+  /bookings/{id}/no-show:
+    post:
+      summary: Mark a booking as no-show (driver only)
+      operationId: noShowBooking
+      tags: [Bookings]
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      responses:
+        "200":
+          $ref: "#/components/responses/Success"
+
+  /ride-requests:
+    post:
+      summary: Publish an open ride request (student)
+      operationId: createRideRequest
+      tags: [RideRequests]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RideRequestPayload"
+      responses:
+        "201":
+          $ref: "#/components/responses/Success"
+  /ride-requests/mine:
+    get:
+      summary: List the user's requests
+      operationId: myRideRequests
+      tags: [RideRequests]
+      responses:
+        "200":
+          $ref: "#/components/responses/Success"
+  /ride-requests/{id}:
+    get:
+      summary: Get a ride request
+      operationId: getRideRequest
+      tags: [RideRequests]
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      responses:
+        "200":
+          $ref: "#/components/responses/Success"
+    patch:
+      summary: Update an open ride request
+      operationId: updateRideRequest
+      tags: [RideRequests]
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateRideRequestPayload"
+      responses:
+        "200":
+          $ref: "#/components/responses/Success"
+  /ride-requests/{id}/cancel:
+    post:
+      summary: Cancel a ride request
+      operationId: cancelRideRequest
+      tags: [RideRequests]
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      responses:
+        "200":
+          $ref: "#/components/responses/Success"
+  /ride-requests/{id}/matches:
+    get:
+      summary: Matching open rides for a request
+      operationId: rideRequestMatches
+      tags: [RideRequests]
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      responses:
+        "200":
+          $ref: "#/components/responses/Success"
+
+  /rides/{rideId}/ratings:
+    post:
+      summary: Rate a participant of a completed ride
+      operationId: createRating
+      tags: [Ratings]
+      parameters:
+        - $ref: "#/components/parameters/RideIdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [revieweeId, rating]
+              properties:
+                revieweeId:
+                  type: string
+                  format: uuid
+                rating:
+                  type: number
+                  minimum: 1
+                  maximum: 5
+                comment:
+                  type: string
+                  maxLength: 500
+      responses:
+        "201":
+          $ref: "#/components/responses/Success"
+  /users/{userId}/ratings:
+    get:
+      summary: Ratings received by a user
+      operationId: ratingsForUser
+      tags: [Ratings]
+      parameters:
+        - $ref: "#/components/parameters/UserIdParam"
+      responses:
+        "200":
+          $ref: "#/components/responses/Success"
+
+  /reports:
+    post:
+      summary: Submit a report about a user or ride
+      operationId: createReport
+      tags: [Reports]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason, details]
+              properties:
+                reportedUserId:
+                  type: string
+                  format: uuid
+                rideId:
+                  type: string
+                  format: uuid
+                reason:
+                  type: string
+                  enum: [DANGEROUS_DRIVING, HARASSMENT, FAKE_DETAILS, NO_SHOW, EXCESSIVE_CHARGING, MISBEHAVIOR, WRONG_PICKUP, SPAM, OTHER]
+                details:
+                  type: string
+                  maxLength: 2000
+      responses:
+        "201":
+          $ref: "#/components/responses/Success"
+  /reports/mine:
+    get:
+      summary: Reports submitted by the user
+      operationId: myReports
+      tags: [Reports]
+      responses:
+        "200":
+          $ref: "#/components/responses/Success"
+
+  /notifications:
+    get:
+      summary: List the user's notifications (newest first)
+      operationId: listNotifications
+      tags: [Notifications]
+      parameters:
+        - $ref: "#/components/parameters/PageParam"
+        - $ref: "#/components/parameters/PageSizeParam"
+      responses:
+        "200":
+          $ref: "#/components/responses/Success"
+  /notifications/read-all:
+    post:
+      summary: Mark all notifications as read
+      operationId: markAllNotificationsRead
+      tags: [Notifications]
+      responses:
+        "200":
+          $ref: "#/components/responses/Success"
+  /notifications/{id}/read:
+    patch:
+      summary: Mark one notification as read
+      operationId: markNotificationRead
+      tags: [Notifications]
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      responses:
+        "200":
+          $ref: "#/components/responses/Success"
+
+  /admin/dashboard:
+    get:
+      summary: Admin usage summary
+      operationId: adminDashboard
+      tags: [Admin]
+      responses:
+        "200":
+          $ref: "#/components/responses/Success"
+  /admin/users:
+    get:
+      summary: List users (role/query filters, paginated)
+      operationId: adminListUsers
+      tags: [Admin]
+      parameters:
+        - name: query
+          in: query
+          schema:
+            type: string
+        - name: role
+          in: query
+          schema:
+            type: string
+            enum: [STUDENT, DRIVER, ADMIN, SUPER_ADMIN]
+        - $ref: "#/components/parameters/PageParam"
+        - $ref: "#/components/parameters/PageSizeParam"
+      responses:
+        "200":
+          $ref: "#/components/responses/Success"
+  /admin/users/{userId}/status:
+    patch:
+      summary: Set account status (suspend/restore)
+      operationId: setUserStatus
+      tags: [Admin]
+      parameters:
+        - $ref: "#/components/parameters/UserIdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [accountStatus]
+              properties:
+                accountStatus:
+                  type: string
+                  enum: [ACTIVE, SUSPENDED]
+      responses:
+        "200":
+          $ref: "#/components/responses/Success"
+  /admin/drivers/pending:
+    get:
+      summary: Drivers awaiting verification
+      operationId: pendingDrivers
+      tags: [Admin]
+      responses:
+        "200":
+          $ref: "#/components/responses/Success"
+  /admin/drivers/{userId}/verification:
+    patch:
+      summary: Verify or reject a driver
+      operationId: verifyDriver
+      tags: [Admin]
+      parameters:
+        - $ref: "#/components/parameters/UserIdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status:
+                  type: string
+                  enum: [VERIFIED, REJECTED]
+      responses:
+        "200":
+          $ref: "#/components/responses/Success"
+  /admin/vehicles/pending:
+    get:
+      summary: Vehicles awaiting verification
+      operationId: pendingVehicles
+      tags: [Admin]
+      responses:
+        "200":
+          $ref: "#/components/responses/Success"
+  /admin/vehicles/{vehicleId}/verification:
+    patch:
+      summary: Verify or reject a vehicle
+      operationId: verifyVehicle
+      tags: [Admin]
+      parameters:
+        - $ref: "#/components/parameters/VehicleIdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status:
+                  type: string
+                  enum: [VERIFIED, REJECTED]
+      responses:
+        "200":
+          $ref: "#/components/responses/Success"
+  /admin/reports:
+    get:
+      summary: List reports (status filter, paginated)
+      operationId: adminListReports
+      tags: [Admin]
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [OPEN, RESOLVED, DISMISSED]
+        - $ref: "#/components/parameters/PageParam"
+        - $ref: "#/components/parameters/PageSizeParam"
+      responses:
+        "200":
+          $ref: "#/components/responses/Success"
+  /admin/reports/{id}:
+    patch:
+      summary: Resolve or dismiss a report
+      operationId: resolveReport
+      tags: [Admin]
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status:
+                  type: string
+                  enum: [RESOLVED, DISMISSED]
+                adminAction:
+                  type: string
+                  maxLength: 1000
+      responses:
+        "200":
+          $ref: "#/components/responses/Success"
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  parameters:
+    IdParam:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    RideIdParam:
+      name: rideId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    UserIdParam:
+      name: userId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    VehicleIdParam:
+      name: vehicleId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    PageParam:
+      name: page
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+    PageSizeParam:
+      name: pageSize
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+  responses:
+    Success:
+      description: Successful response with the standard envelope
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ApiSuccess"
+    Error:
+      description: Failed response with the standard envelope
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ApiError"
+  schemas:
+    ApiSuccess:
+      type: object
+      required: [success, data, meta]
+      properties:
+        success:
+          type: boolean
+          const: true
+        data:
+          nullable: true
+        meta:
+          nullable: true
+    ApiError:
+      type: object
+      required: [success, error]
+      properties:
+        success:
+          type: boolean
+          const: false
+        error:
+          type: object
+          required: [code, message, fields]
+          properties:
+            code:
+              type: string
+              example: RIDE_FULL
+            message:
+              type: string
+            fields:
+              type: array
+              items:
+                type: object
+                properties:
+                  path:
+                    type: string
+                  message:
+                    type: string
+              nullable: true
+    TokenPair:
+      type: object
+      required: [accessToken, refreshToken]
+      properties:
+        accessToken:
+          type: string
+          description: "Short-lived JWT (15m). Send via Authorization: Bearer."
+        refreshToken:
+          type: string
+          description: Opaque token, rotated on each /auth/refresh use.
+    RegisterRequest:
+      type: object
+      required: [email, fullName, password]
+      properties:
+        email:
+          type: string
+          format: email
+          maxLength: 254
+        fullName:
+          type: string
+          minLength: 2
+          maxLength: 120
+        password:
+          type: string
+          minLength: 8
+          maxLength: 128
+          description: Needs letters, a number and a symbol.
+        studentId:
+          type: string
+          maxLength: 60
+        mainCampusId:
+          type: string
+          format: uuid
+    CreateVehicleRequest:
+      type: object
+      required: [vehicleType, company, model, color, registrationNumber, capacity, perKmRate]
+      properties:
+        vehicleType:
+          type: string
+          enum: [SEDAN, SUV, HATCHBACK, VAN, COACH]
+        company:
+          type: string
+          maxLength: 80
+        model:
+          type: string
+          maxLength: 80
+        color:
+          type: string
+          maxLength: 40
+        registrationNumber:
+          type: string
+          maxLength: 40
+        capacity:
+          type: integer
+          minimum: 2
+          maximum: 60
+        perKmRate:
+          type: number
+          minimum: 0
+        permitImageUrl:
+          type: string
+        insuranceImageUrl:
+          type: string
+    UpdateVehicleRequest:
+      type: object
+      properties:
+        color:
+          type: string
+        perKmRate:
+          type: number
+          minimum: 0
+        active:
+          type: boolean
+    CreateRideRequest:
+      type: object
+      required: [vehicleId, originCampusId, destinationCampusId, origin, destination, departureAt, availableSeats, pricePerSeat]
+      properties:
+        vehicleId:
+          type: string
+          format: uuid
+        originCampusId:
+          type: string
+          format: uuid
+        destinationCampusId:
+          type: string
+          format: uuid
+        origin:
+          type: string
+          maxLength: 120
+        destination:
+          type: string
+          maxLength: 120
+        departureAt:
+          type: string
+          format: date-time
+        expectedArrivalAt:
+          type: string
+          format: date-time
+          nullable: true
+        availableSeats:
+          type: integer
+          minimum: 1
+          maximum: 20
+        pricePerSeat:
+          type: number
+          minimum: 0
+        pickupRadiusKm:
+          type: number
+          minimum: 0
+          maximum: 50
+          default: 2
+        maxDetourMinutes:
+          type: integer
+          minimum: 0
+          maximum: 240
+          default: 30
+        conditions:
+          type: array
+          items:
+            type: string
+        notes:
+          type: string
+          maxLength: 500
+        recurring:
+          type: boolean
+        recurringDays:
+          type: array
+          items:
+            type: integer
+            minimum: 0
+            maximum: 6
+    UpdateRideRequest:
+      type: object
+      properties:
+        departureAt:
+          type: string
+          format: date-time
+        expectedArrivalAt:
+          type: string
+          format: date-time
+          nullable: true
+        pricePerSeat:
+          type: number
+          minimum: 0
+        availableSeats:
+          type: integer
+          minimum: 1
+          maximum: 20
+          description: Cannot go below the number of booked seats.
+        pickupRadiusKm:
+          type: number
+          minimum: 0
+          maximum: 50
+        maxDetourMinutes:
+          type: integer
+          minimum: 0
+          maximum: 240
+        conditions:
+          type: array
+          items:
+            type: string
+        notes:
+          type: string
+          nullable: true
+    RideRequestPayload:
+      type: object
+      required: [originCampusId, destinationCampusId, earliestDeparture, latestDeparture, requiredSeats]
+      properties:
+        originCampusId:
+          type: string
+          format: uuid
+        destinationCampusId:
+          type: string
+          format: uuid
+        earliestDeparture:
+          type: string
+          format: date-time
+        latestDeparture:
+          type: string
+          format: date-time
+        requiredArrival:
+          type: string
+          format: date-time
+        requiredSeats:
+          type: integer
+          minimum: 1
+          maximum: 20
+        maxBudget:
+          type: number
+          minimum: 1
+        maxPickupDistanceKm:
+          type: number
+          minimum: 0
+          maximum: 50
+          default: 3
+    UpdateRideRequestPayload:
+      type: object
+      properties:
+        earliestDeparture:
+          type: string
+          format: date-time
+        latestDeparture:
+          type: string
+          format: date-time
+        requiredArrival:
+          type: string
+          format: date-time
+          nullable: true
+        requiredSeats:
+          type: integer
+          minimum: 1
+          maximum: 20
+        maxBudget:
+          type: number
+          minimum: 1
+        maxPickupDistanceKm:
+          type: number
+          minimum: 0
+          maximum: 50

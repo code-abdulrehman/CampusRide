@@ -1,0 +1,21 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: campusride-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: campusride
+      POSTGRES_PASSWORD: campusride
+      POSTGRES_DB: campusride
+    ports:
+      - "5432:5432"
+    volumes:
+      - campusride-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U campusride -d campusride"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  campusride-pgdata:
