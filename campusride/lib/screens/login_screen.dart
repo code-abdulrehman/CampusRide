@@ -4,6 +4,7 @@ import '../providers/app_state_provider.dart';
 import '../widgets/common_widgets.dart';
 import 'register_screen.dart';
 import 'main_shell.dart';
+import 'server_settings_screen.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -13,9 +14,10 @@ class LoginScreen extends StatefulWidget {
 }
 
 class _LoginScreenState extends State<LoginScreen> {
-  final _emailController = TextEditingController(text: 'ahmed@university.edu');
-  final _passwordController = TextEditingController(text: 'demo123');
+  final _emailController = TextEditingController(text: 'student1@campusride.test');
+  final _passwordController = TextEditingController(text: 'CampusRide@123');
   bool _obscure = true;
+  bool _loading = false;
 
   @override
   void dispose() {
@@ -24,13 +26,28 @@ class _LoginScreenState extends State<LoginScreen> {
     super.dispose();
   }
 
-  void _login(AppStateProvider state) {
-    final ok = state.login(_emailController.text.trim(), password: _passwordController.text);
-    if (!ok) {
-      showAppSnack(context, 'User not found. Use a demo account or register first.', error: true);
+  Future<void> _login(AppStateProvider state) async {
+    final email = _emailController.text.trim();
+    final password = _passwordController.text;
+    if (email.isEmpty || password.isEmpty) {
+      showAppSnack(context, 'Enter your email and password.', error: true);
       return;
     }
-    Navigator.of(context).pushReplacement(MaterialPageRoute(builder: (_) => const MainShell()));
+    setState(() => _loading = true);
+    try {
+      final ok = await state.login(email, password);
+      if (!mounted) return;
+      if (ok) {
+        Navigator.of(context).pushReplacement(MaterialPageRoute(builder: (_) => const MainShell()));
+      } else {
+        showAppSnack(context, 'Login failed.', error: true);
+      }
+    } catch (e) {
+      if (!mounted) return;
+      showAppSnack(context, e.toString(), error: true);
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
   }
 
   @override
@@ -62,7 +79,7 @@ class _LoginScreenState extends State<LoginScreen> {
                 textAlign: TextAlign.center,
                 style: TextStyle(color: Colors.grey.shade600),
               ),
-              const SizedBox(height: 32),
+              const SizedBox(height: 24),
               TextField(
                 controller: _emailController,
                 keyboardType: TextInputType.emailAddress,
@@ -87,18 +104,27 @@ class _LoginScreenState extends State<LoginScreen> {
               const SizedBox(height: 24),
               Consumer<AppStateProvider>(
                 builder: (context, state, _) => FilledButton(
-                  onPressed: () => _login(state),
-                  child: const Text('Sign In'),
+                  onPressed: _loading ? null : () => _login(state),
+                  child: _loading
+                      ? const SizedBox(width: 22, height: 22, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                      : const Text('Sign In'),
                 ),
               ),
-              const SizedBox(height: 12),
+              const SizedBox(height: 4),
               TextButton(
                 onPressed: () {
                   Navigator.of(context).push(MaterialPageRoute(builder: (_) => const RegisterScreen()));
                 },
                 child: const Text('New student? Create an account'),
               ),
-              const SizedBox(height: 20),
+              TextButton.icon(
+                onPressed: () {
+                  Navigator.of(context).push(MaterialPageRoute(builder: (_) => const ServerSettingsScreen()));
+                },
+                icon: const Icon(Icons.dns_outlined, size: 18),
+                label: const Text('Server settings (API URL)'),
+              ),
+              const SizedBox(height: 12),
               Divider(color: Colors.grey.shade300),
               const SizedBox(height: 12),
               Text(
@@ -114,25 +140,28 @@ class _LoginScreenState extends State<LoginScreen> {
                 children: [
                   ActionChip(
                     avatar: const Icon(Icons.directions_car, size: 18),
-                    label: const Text('Ahmed (Driver)'),
+                    label: const Text('Driver (driver1)'),
                     onPressed: () {
-                      _emailController.text = 'ahmed@university.edu';
+                      _emailController.text = 'driver1@campusride.test';
+                      _passwordController.text = 'CampusRide@123';
                       _login(context.read<AppStateProvider>());
                     },
                   ),
                   ActionChip(
                     avatar: const Icon(Icons.person, size: 18),
-                    label: const Text('Hamza (Passenger)'),
+                    label: const Text('Student (student1)'),
                     onPressed: () {
-                      _emailController.text = 'hamza@university.edu';
+                      _emailController.text = 'student1@campusride.test';
+                      _passwordController.text = 'CampusRide@123';
                       _login(context.read<AppStateProvider>());
                     },
                   ),
                   ActionChip(
                     avatar: const Icon(Icons.admin_panel_settings, size: 18),
-                    label: const Text('Admin'),
+                    label: const Text('Admin (admin)'),
                     onPressed: () {
-                      _emailController.text = 'admin@university.edu';
+                      _emailController.text = 'admin@campusride.test';
+                      _passwordController.text = 'CampusRide@123';
                       _login(context.read<AppStateProvider>());
                     },
                   ),

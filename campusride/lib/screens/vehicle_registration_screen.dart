@@ -18,6 +18,7 @@ class _VehicleRegistrationScreenState extends State<VehicleRegistrationScreen> {
   final _regController = TextEditingController(text: 'LEA-9999');
   int _year = 2023;
   int _totalSeats = 5;
+  bool _submitting = false;
 
   @override
   void dispose() {
@@ -28,7 +29,7 @@ class _VehicleRegistrationScreenState extends State<VehicleRegistrationScreen> {
     super.dispose();
   }
 
-  void _register() {
+  Future<void> _register() async {
     final company = _companyController.text.trim();
     final model = _modelController.text.trim();
     final reg = _regController.text.trim();
@@ -36,16 +37,27 @@ class _VehicleRegistrationScreenState extends State<VehicleRegistrationScreen> {
       showAppSnack(context, 'Company, model and registration number are required.', error: true);
       return;
     }
-    context.read<AppStateProvider>().addVehicle(
-          company: company,
-          model: model,
-          modelYear: _year,
-          color: _colorController.text.trim().isEmpty ? 'White' : _colorController.text.trim(),
-          registrationNumber: reg,
-          totalSeats: _totalSeats,
-        );
-    showAppSnack(context, 'Vehicle submitted for verification.');
-    Navigator.of(context).pop();
+    setState(() => _submitting = true);
+    try {
+      final state = context.read<AppStateProvider>();
+      await state.addVehicle(
+        company: company,
+        model: model,
+        modelYear: _year,
+        color: _colorController.text.trim().isEmpty ? 'White' : _colorController.text.trim(),
+        registrationNumber: reg,
+        totalSeats: _totalSeats,
+      );
+      if (!mounted) return;
+      await state.loadMyVehicles();
+      showAppSnack(context, 'Vehicle submitted for verification.');
+      Navigator.of(context).pop();
+    } catch (e) {
+      if (!mounted) return;
+      showAppSnack(context, '$e', error: true);
+    } finally {
+      if (mounted) setState(() => _submitting = false);
+    }
   }
 
   @override
@@ -130,8 +142,10 @@ class _VehicleRegistrationScreenState extends State<VehicleRegistrationScreen> {
           ),
           const SizedBox(height: 20),
           FilledButton.icon(
-            onPressed: _register,
-            icon: const Icon(Icons.add),
+            onPressed: _submitting ? null : _register,
+            icon: _submitting
+                ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                : const Icon(Icons.add),
             label: const Text('Register Vehicle'),
           ),
           const SizedBox(height: 16),

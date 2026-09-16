@@ -12,6 +12,33 @@ const server = app.listen(env.PORT, env.HOST, () => {
 
 attachWebSocket(server);
 
+// Ngrok tunnel for mobile dev
+if (env.NGROK_ENABLED === 'true' && env.NODE_ENV === 'development') {
+  import('@ngrok/ngrok')
+    .then(async (mod) => {
+      const listener = await mod.default.forward({
+        addr: env.PORT,
+        authtoken_from_env: true,
+        domain: env.NGROK_SUBDOMAIN ? `${env.NGROK_SUBDOMAIN}.ngrok-free.app` : undefined,
+      });
+      const url = listener.url();
+      logger.info({ ngrokUrl: url }, 'Ngrok tunnel established');
+      console.log('');
+      console.log('╔══════════════════════════════════════════════════════════════╗');
+      console.log('║                    NGROK TUNNEL ACTIVE                      ║');
+      console.log(`║  ${url?.padEnd(58)}║`);
+      console.log('║  Mobile app base URL:                                       ║');
+      console.log(`║  ${url ? '$url/api/v1'.padEnd(58) : 'N/A'.padEnd(58)}║`);
+      console.log('╚══════════════════════════════════════════════════════════════╝');
+      console.log('');
+    })
+    .catch((err) => {
+      logger.error({ err }, 'Failed to start ngrok tunnel');
+      console.error('Ngrok error:', err.message);
+      console.error('Set NGROK_AUTH_TOKEN in your environment or ~/.ngrok2/ngrok.yml');
+    });
+}
+
 async function shutdown(signal: string): Promise<void> {
   logger.info({ signal }, 'Shutting down');
   server.close(async () => {

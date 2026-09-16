@@ -24,6 +24,7 @@
     "seed": "tsx prisma/seed.ts"
   },
   "dependencies": {
+    "@ngrok/ngrok": "^1.7.0",
     "@prisma/client": "^6.19.3",
     "argon2": "^0.45.1",
     "cors": "^2.8.6",

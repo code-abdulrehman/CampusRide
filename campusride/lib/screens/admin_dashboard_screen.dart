@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import '../models/enums.dart';
 import '../providers/app_state_provider.dart';
 import '../widgets/common_widgets.dart';
 
@@ -12,33 +11,35 @@ class AdminDashboardScreen extends StatefulWidget {
 }
 
 class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
+  bool _loading = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _refresh();
+  }
+
+  Future<void> _refresh() async {
+    final state = context.read<AppStateProvider>();
+    setState(() => _loading = true);
+    await Future.wait([
+      state.loadAdminDashboard(),
+      state.loadAdminUsers(),
+      state.loadPendingDrivers(),
+      state.loadPendingVehicles(),
+      state.loadAdminReports(),
+      state.loadMyVehicles(),
+    ]);
+    if (mounted) setState(() => _loading = false);
+  }
 
   @override
   Widget build(BuildContext context) {
     final state = context.watch<AppStateProvider>();
-    final repo = state.repository;
+    final dash = state.adminDashboard;
 
-    final students = repo.users.where((u) => u.userId != 'admin1').toList();
-    final verifiedDrivers = students.where((u) => u.isDriverVerified).length;
-    final verifiedStudents = students.where((u) => u.isStudentVerified).length;
-    final verifiedVehicles = repo.vehicles.where((v) => v.isVerified).length;
-    final allRides = repo.rides;
-    final activeRides = allRides.where((r) => r.rideStatus == RideStatus.open || r.rideStatus == RideStatus.full).length;
-    final completedRides = allRides.where((r) => r.rideStatus == RideStatus.completed).length;
-    final cancelledRides = allRides.where((r) => r.rideStatus == RideStatus.cancelled).length;
-    final pendingReports = repo.reports.where((r) => r.status == ReportStatus.pending).length;
-
-    final pendingVehicles = repo.vehicles.where((v) => v.verificationStatus == VehicleStatus.pending).toList();
-    final pendingDrivers = students.where((u) => u.verificationStatus == UserVerificationStatus.studentVerified && !u.isDriverVerified).toList();
-    final pendingStudents = students.where((u) => !u.isStudentVerified).toList();
-    final pendingReportsList = repo.reports.where((r) => r.status == ReportStatus.pending).toList();
-
-    final routeCounts = <String, int>{};
-    for (final r in allRides) {
-      final key = '${r.origin} → ${r.destination}';
-      routeCounts[key] = (routeCounts[key] ?? 0) + 1;
-    }
-    final topRoutes = routeCounts.entries.toList()..sort((a, b) => b.value.compareTo(a.value));
+    final students = state.adminUsers;
+    final pendingReportsList = state.adminReports;
 
     return DefaultTabController(
       length: 3,
@@ -46,6 +47,12 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
         appBar: AppBar(
           title: const Text('Admin Dashboard'),
           automaticallyImplyLeading: false,
+          actions: [
+            IconButton(
+              icon: const Icon(Icons.refresh),
+              onPressed: _loading ? null : _refresh,
+            ),
+          ],
           bottom: const TabBar(
             tabs: [
               Tab(text: 'Overview'),
@@ -54,21 +61,29 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
             ],
           ),
         ),
-        body: TabBarView(
-          children: [
-            _overview(state, students.length, verifiedStudents, verifiedDrivers, verifiedVehicles, activeRides, completedRides, cancelledRides, pendingReports, topRoutes),
-            _verify(state, pendingStudents, pendingDrivers, pendingVehicles),
-            _reports(state, pendingReportsList),
-          ],
-        ),
+        body: _loading && students.isEmpty
+            ? const Center(child: CircularProgressIndicator())
+            : TabBarView(
+                children: [
+                  _overview(state, dash),
+                  _verify(state),
+                  _reports(state, pendingReportsList),
+                ],
+              ),
       ),
     );
   }
 
-  Widget _overview(AppStateProvider state, int students, int verifiedStudents, int verifiedDrivers, int verifiedVehicles, int activeRides, int completedRides, int cancelledRides, int pendingReports, List<MapEntry<String, int>> topRoutes) {
-    final totalBookings = state.repository.bookings.length;
-    final costSaved = state.repository.bookings.fold(0.0, (p, b) => p + (b.status != BookingStatus.cancelled ? b.amountPaid : 0));
-    final avgOccupancy = completedRides > 0 ? (state.repository.bookings.where((b) => b.status == BookingStatus.completed).length / (completedRides + 1)).toStringAsFixed(1) : '0.0';
+  Widget _overview(AppStateProvider state, Map<String, dynamic> dash) {
+    final totalUsers = (dash['totalUsers'] ?? 0).toString();
+    final totalStudents = (dash['totalStudents'] ?? 0).toString();
+    final driversPending = (dash['driversPending'] ?? 0).toString();
+    final vehiclesPending = (dash['vehiclesPending'] ?? 0).toString();
+    final openReports = (dash['openReports'] ?? 0).toString();
+    final activeRides = (dash['activeRides'] ?? 0).toString();
+    final ridesToday = (dash['ridesToday'] ?? 0).toString();
+    final totalRides = (dash['totalRides'] ?? 0).toString();
+    final suspendedUsers = (dash['suspendedUsers'] ?? 0).toString();
 
     return ListView(
       padding: const EdgeInsets.all(16),
@@ -83,32 +98,17 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
           crossAxisSpacing: 10,
           childAspectRatio: 1.6,
           children: [
-            _statCard(Icons.group, Colors.blue, '$students', 'Registered'),
-            _statCard(Icons.verified_user, Colors.green, '$verifiedStudents', 'Verified Students'),
-            _statCard(Icons.directions_car, Colors.teal, '$verifiedDrivers', 'Verified Drivers'),
-            _statCard(Icons.tire_repair, Colors.purple, '$verifiedVehicles', 'Verified Vehicles'),
-            _statCard(Icons.route, Colors.orange, '$activeRides', 'Active Rides'),
-            _statCard(Icons.check_circle, Colors.green, '$completedRides', 'Completed'),
-            _statCard(Icons.cancel, Colors.red, '$cancelledRides', 'Cancelled'),
-            _statCard(Icons.report, Colors.red, '$pendingReports', 'Pending Reports'),
-            _statCard(Icons.event_seat, Colors.blueGrey, avgOccupancy, 'Avg Seats/Ride'),
-            _statCard(Icons.savings, Colors.green, 'Rs.${costSaved.toStringAsFixed(0)}', 'Cost Shared'),
-            _statCard(Icons.confirmation_number, Colors.indigo, '$totalBookings', 'Bookings'),
+            _statCard(Icons.group, Colors.blue, totalUsers, 'Registered'),
+            _statCard(Icons.verified_user, Colors.green, totalStudents, 'Verified Students'),
+            _statCard(Icons.directions_car, Colors.teal, driversPending, 'Drivers Pending'),
+            _statCard(Icons.tire_repair, Colors.purple, vehiclesPending, 'Vehicles Pending'),
+            _statCard(Icons.route, Colors.orange, activeRides, 'Active Rides'),
+            _statCard(Icons.calendar_today, Colors.indigo, ridesToday, 'Rides Today'),
+            _statCard(Icons.history, Colors.brown, totalRides, 'Total Rides'),
+            _statCard(Icons.report, Colors.red, openReports, 'Open Reports'),
+            _statCard(Icons.block, Colors.orange, suspendedUsers, 'Suspended'),
           ],
         ),
-        const SizedBox(height: 12),
-        const Text('Popular Routes', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 16)),
-        const SizedBox(height: 8),
-        ...topRoutes.map((e) => Card(
-              margin: const EdgeInsets.symmetric(vertical: 4),
-              child: ListTile(
-                leading: const Icon(Icons.route),
-                title: Text(e.key),
-                trailing: Chip(label: Text('${e.value} rides')),
-              ),
-            )),
-        if (topRoutes.isEmpty)
-          const EmptyState(icon: Icons.route, title: 'No route data', message: 'Ride data will show up here.'),
       ],
     );
   }
@@ -132,16 +132,20 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
     );
   }
 
-  Widget _verify(AppStateProvider state, List pendingStudents, List pendingDrivers, List pendingVehicles) {
+  Widget _verify(AppStateProvider state) {
+    final pendingStudents = state.adminUsers.where((u) => _str(u['studentVerified']) == 'PENDING').toList();
+    final pendingDrivers = state.pendingDrivers;
+    final pendingVehicles = state.pendingVehicles;
+
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
         const Text('Student Verifications', style: TextStyle(fontWeight: FontWeight.w800)),
         const SizedBox(height: 6),
         ...pendingStudents.map((u) => _verifyTile(
-              title: u.name,
-              subtitle: '${u.email} • ${u.studentId}',
-              onApprove: () => state.verifyStudent(u.userId),
+              title: _str(u['fullName']),
+              subtitle: '${_str(u['email'])} • ${_str(u['studentId'])}',
+              onApprove: () => state.verifyStudent(_str(u['id'])),
             )),
         if (pendingStudents.isEmpty)
           Padding(
@@ -152,9 +156,9 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
         const Text('Driver Verifications', style: TextStyle(fontWeight: FontWeight.w800)),
         const SizedBox(height: 6),
         ...pendingDrivers.map((u) => _verifyTile(
-              title: u.name,
-              subtitle: '${u.email} • Apply for driver role',
-              onApprove: () => state.verifyDriver(u.userId),
+              title: _str(u['fullName']),
+              subtitle: '${_str(u['email'])} • ${u['vehicleCount'] ?? 0} vehicle(s)',
+              onApprove: () => state.verifyDriver(_str(u['id'])),
             )),
         if (pendingDrivers.isEmpty)
           Padding(
@@ -164,14 +168,11 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
         const Divider(height: 28),
         const Text('Vehicle Verifications', style: TextStyle(fontWeight: FontWeight.w800)),
         const SizedBox(height: 6),
-        ...pendingVehicles.map((v) {
-          final owner = state.repository.getUserById(v.ownerUserId);
-          return _verifyTile(
-            title: '${v.company} ${v.model} (${v.registrationNumber})',
-            subtitle: 'Owner: ${owner?.name ?? 'Unknown'}',
-            onApprove: () => state.verifyVehicle(v.vehicleId),
-          );
-        }),
+        ...pendingVehicles.map((v) => _verifyTile(
+              title: '${_str(v['company'])} ${_str(v['model'])} (${_str(v['registrationNumber'])})',
+              subtitle: '${_str(v['vehicleType'])} • ${v['totalSeats'] ?? '?'} seats',
+              onApprove: () => state.verifyVehicle(_str(v['id'])),
+            )),
         if (pendingVehicles.isEmpty)
           Padding(
             padding: const EdgeInsets.symmetric(vertical: 8),
@@ -196,7 +197,8 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
     );
   }
 
-  Widget _reports(AppStateProvider state, List pendingReports) {
+  Widget _reports(AppStateProvider state, List<Map<String, dynamic>> reports) {
+    final pendingReports = reports.where((r) => _str(r['status']) == 'OPEN').toList();
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
@@ -204,7 +206,8 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
           const EmptyState(icon: Icons.done_all, title: 'No pending reports', message: 'All reports have been handled.')
         else
           ...pendingReports.map((r) {
-            final reported = state.repository.getUserById(r.reportedUserId);
+            final reported = (r['reportedUser'] as Map<String, dynamic>?)?['fullName'] ?? 'Unknown';
+            final reason = _humanizeReason(_str(r['reason']));
             return Card(
               margin: const EdgeInsets.symmetric(vertical: 4),
               child: Padding(
@@ -216,15 +219,15 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                       children: [
                         const Icon(Icons.report, color: Colors.red),
                         const SizedBox(width: 8),
-                        Text(reported?.name ?? 'Unknown', style: const TextStyle(fontWeight: FontWeight.w700)),
+                        Text(reported, style: const TextStyle(fontWeight: FontWeight.w700)),
                         const Spacer(),
-                        StatusChip(label: r.reason.name, color: Colors.orange),
+                        StatusChip(label: reason, color: Colors.orange),
                       ],
                     ),
-                    if (r.description.isNotEmpty)
+                    if ((r['description'] ?? '').toString().isNotEmpty)
                       Padding(
                         padding: const EdgeInsets.only(top: 6),
-                        child: Text(r.description),
+                        child: Text((r['description'] ?? '').toString()),
                       ),
                     const Padding(
                       padding: EdgeInsets.symmetric(vertical: 8),
@@ -234,17 +237,17 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                       mainAxisAlignment: MainAxisAlignment.end,
                       children: [
                         TextButton(
-                          onPressed: () => state.resolveReport(r.reportId, ReportStatus.warning),
+                          onPressed: () => state.resolveReport(_str(r['id']), status: 'WARNED', adminAction: 'warning issued'),
                           child: const Text('Warning'),
                         ),
                         TextButton(
-                          onPressed: () => state.resolveReport(r.reportId, ReportStatus.temporarySuspension),
+                          onPressed: () => state.resolveReport(_str(r['id']), status: 'RESOLVED', adminAction: 'temporary suspension'),
                           child: const Text('Suspend'),
                         ),
                         ElevatedButton(
                           style: ElevatedButton.styleFrom(backgroundColor: Colors.red.shade700, minimumSize: const Size(100, 38)),
                           onPressed: () {
-                            state.resolveReport(r.reportId, ReportStatus.permanentBan);
+                            state.resolveReport(_str(r['id']), status: 'DISMISSED', adminAction: 'permanent ban');
                             showAppSnack(context, 'User permanently banned.');
                           },
                           child: const Text('Ban'),
@@ -259,28 +262,33 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
         const SizedBox(height: 10),
         const Text('All Users', style: TextStyle(fontWeight: FontWeight.w800)),
         const SizedBox(height: 6),
-        ...state.repository.users.map((u) {
-          if (u.userId == 'admin1') return const SizedBox.shrink();
+        ...state.adminUsers.map((u) {
+          if (_str(u['role']) == 'ADMIN') return const SizedBox.shrink();
           return Card(
             margin: const EdgeInsets.symmetric(vertical: 2),
             child: ListTile(
               dense: true,
-              leading: Avatar(name: u.name, radius: 16),
-              title: Text(u.name),
-              subtitle: Text(u.email),
+              leading: Avatar(name: _str(u['fullName']), radius: 16),
+              title: Text(_str(u['fullName'])),
+              subtitle: Text(_str(u['email'])),
               trailing: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  if (u.accountStatus == AccountStatus.active)
+                  if (_str(u['accountStatus']) == 'ACTIVE' && _str(u['role']) != 'ADMIN')
                     IconButton(
                       icon: const Icon(Icons.block, color: Colors.red),
                       tooltip: 'Suspend',
                       onPressed: () {
-                        state.suspendUser(u.userId);
-                        showAppSnack(context, '${u.name} suspended.');
+                        state.suspendUser(_str(u['id']));
+                        showAppSnack(context, '${_str(u['fullName'])} suspended.');
                       },
                     ),
-                  statusChipFor(u.verificationStatus),
+                  StatusChip(
+                    label: _str(u['driverVerified']) == 'VERIFIED'
+                        ? 'Driver'
+                        : (_str(u['studentVerified']) == 'VERIFIED' ? 'Student' : 'None'),
+                    color: Colors.grey,
+                  ),
                 ],
               ),
             ),
@@ -290,14 +298,21 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
     );
   }
 
-  Widget statusChipFor(UserVerificationStatus status) {
-    final (label, color) = switch (status) {
-      UserVerificationStatus.none => ('None', Colors.grey),
-      UserVerificationStatus.studentPending => ('Pending', Colors.orange),
-      UserVerificationStatus.studentVerified => ('Student', Colors.blue),
-      UserVerificationStatus.driverPending => ('Driver Pending', Colors.deepOrange),
-      UserVerificationStatus.driverVerified => ('Driver', Colors.green),
+  String _str(Object? v) => v?.toString() ?? '';
+
+  String _humanizeReason(String reason) {
+    final lower = reason.toLowerCase();
+    const map = {
+      'dangerous_driving': 'Dangerous driving',
+      'harassment': 'Harassment',
+      'fake_details': 'Fake details',
+      'no_show': 'No-show',
+      'excessive_charging': 'Excessive charging',
+      'misbehavior': 'Misbehavior',
+      'wrong_pickup': 'Wrong pickup',
+      'spam': 'Spam',
+      'other': 'Other',
     };
-    return StatusChip(label: label, color: color);
+    return map[lower] ?? reason;
   }
 }

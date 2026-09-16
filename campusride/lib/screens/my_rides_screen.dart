@@ -17,6 +17,23 @@ class MyRidesScreen extends StatefulWidget {
 }
 
 class _MyRidesScreenState extends State<MyRidesScreen> {
+  bool _loading = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _refresh();
+  }
+
+  Future<void> _refresh() async {
+    final state = context.read<AppStateProvider>();
+    setState(() => _loading = true);
+    await Future.wait([
+      state.loadMyRides(),
+      state.loadMyBookings(),
+    ]);
+    if (mounted) setState(() => _loading = false);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -30,6 +47,12 @@ class _MyRidesScreenState extends State<MyRidesScreen> {
         appBar: AppBar(
           title: const Text('My Rides'),
           automaticallyImplyLeading: false,
+          actions: [
+            IconButton(
+              icon: const Icon(Icons.refresh),
+              onPressed: _loading ? null : _refresh,
+            ),
+          ],
           bottom: const TabBar(
             tabs: [
               Tab(icon: Icon(Icons.directions_car, size: 18), text: 'Driving'),
@@ -46,82 +69,95 @@ class _MyRidesScreenState extends State<MyRidesScreen> {
 
   // --- Driver view: rides I created + pending requests need management ---
   Widget _driverView(AppStateProvider state) {
-    final repo = state.repository;
-    final myRides = repo.getRidesByDriver(state.currentUser!.userId);
+    final myRides = state.myRides;
 
     if (myRides.isEmpty) {
-      return const EmptyState(
-        icon: Icons.directions_car_outlined,
-        title: 'No rides posted yet',
-        message: 'Offer a ride from the home screen to fill your empty seats.',
-      );
+      return _loading
+          ? const Center(child: CircularProgressIndicator())
+          : const EmptyState(
+              icon: Icons.directions_car_outlined,
+              title: 'No rides posted yet',
+              message: 'Offer a ride from the home screen to fill your empty seats.',
+            );
     }
 
-    // collect pending booking requests across my rides
-    final pendingRequest = <Ride, List<Booking>>{};
-    for (final ride in myRides) {
-      final reqs = repo.getBookingsByRide(ride.rideId).where((b) => b.status == BookingStatus.requested).toList();
-      if (reqs.isNotEmpty) pendingRequest[ride] = reqs;
-    }
-
-    return ListView(
-      padding: const EdgeInsets.only(bottom: 100),
-      children: [
-        if (pendingRequest.isNotEmpty)
-          Card(
-            margin: const EdgeInsets.all(16),
-            color: Colors.orange.shade50,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Row(
+    return FutureBuilder<Map<Ride, List<Booking>>>(
+      future: _fetchPendingRequests(state, myRides),
+      builder: (context, snapshot) {
+        final pendingRequests = snapshot.data ?? {};
+        return ListView(
+          padding: const EdgeInsets.only(bottom: 100),
+          children: [
+            if (pendingRequests.isNotEmpty)
+              Card(
+                margin: const EdgeInsets.all(16),
+                color: Colors.orange.shade50,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Icon(Icons.notifications_active, color: Colors.orange),
-                      SizedBox(width: 8),
-                      Text('Pending seat requests', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 16)),
+                      const Row(
+                        children: [
+                          Icon(Icons.notifications_active, color: Colors.orange),
+                          SizedBox(width: 8),
+                          Text('Pending seat requests', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 16)),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                      ...pendingRequests.entries.map((entry) => _requestTile(state, entry.key, entry.value)),
                     ],
                   ),
-                  const SizedBox(height: 8),
-                  ...pendingRequest.entries.map((entry) => _requestTile(state, entry.key, entry.value)),
-                ],
+                ),
+              )
+            else
+              Padding(
+                padding: const EdgeInsets.all(16),
+                child: Text(
+                  'All seat requests handled 👍',
+                  style: TextStyle(color: Colors.grey.shade600),
+                ),
               ),
-            ),
-          )
-        else
-          Padding(
-            padding: const EdgeInsets.all(16),
-            child: Text(
-              'All seat requests handled 👍',
-              style: TextStyle(color: Colors.grey.shade600),
-            ),
-          ),
-        const SizedBox(height: 4),
-        ...myRides.map((ride) => RideCard(
-              ride: ride,
-              onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => RideDetailScreen(ride: ride))),
-            )),
-      ],
+            const SizedBox(height: 4),
+            ...myRides.map((ride) => RideCard(
+                  ride: ride,
+                  onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => RideDetailScreen(ride: ride))),
+                )),
+          ],
+        );
+      },
     );
+  }
+
+  Future<Map<Ride, List<Booking>>> _fetchPendingRequests(
+      AppStateProvider state, List<Ride> rides) async {
+    final map = <Ride, List<Booking>>{};
+    for (final ride in rides) {
+      final raw = await state.getBookingsByRide(ride.rideId);
+      final bookings = raw
+          .map((b) => Booking.fromApi(b))
+          .where((b) => b.status == BookingStatus.requested)
+          .toList();
+      if (bookings.isNotEmpty) map[ride] = bookings;
+    }
+    return map;
   }
 
   Widget _requestTile(AppStateProvider state, Ride ride, List<Booking> bookings) {
     return Column(
       children: bookings.map((b) {
-        final passenger = state.repository.getUserById(b.passengerId);
         return Padding(
           padding: const EdgeInsets.only(top: 8),
           child: Row(
             children: [
-              Avatar(name: passenger?.name ?? '?', radius: 16),
+              Avatar(name: b.passengerName ?? '?', radius: 16),
               const SizedBox(width: 10),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(passenger?.name ?? 'Passenger', style: const TextStyle(fontWeight: FontWeight.w700), maxLines: 1, overflow: TextOverflow.ellipsis),
+                    Text(b.passengerName ?? 'Passenger', style: const TextStyle(fontWeight: FontWeight.w700), maxLines: 1, overflow: TextOverflow.ellipsis),
                     Text('${ride.origin} → ${ride.destination} • ${b.seatsBooked} seat', style: TextStyle(fontSize: 12, color: Colors.grey.shade600), maxLines: 1, overflow: TextOverflow.ellipsis),
                   ],
                 ),
@@ -150,14 +186,15 @@ class _MyRidesScreenState extends State<MyRidesScreen> {
 
   // --- Passenger view: my bookings ---
   Widget _passengerView(AppStateProvider state) {
-    final repo = state.repository;
-    final myBookings = repo.getBookingsByPassenger(state.currentUser!.userId);
+    final myBookings = state.myBookings;
     if (myBookings.isEmpty) {
-      return const EmptyState(
-        icon: Icons.event_seat,
-        title: 'No bookings yet',
-        message: 'Search for rides and request a seat.',
-      );
+      return _loading
+          ? const Center(child: CircularProgressIndicator())
+          : const EmptyState(
+              icon: Icons.event_seat,
+              title: 'No bookings yet',
+              message: 'Search for rides and request a seat.',
+            );
     }
     return ListView(
       padding: const EdgeInsets.only(bottom: 100),
@@ -168,21 +205,17 @@ class _MyRidesScreenState extends State<MyRidesScreen> {
   }
 
   Widget _bookingTile(AppStateProvider state, Booking b) {
-    final ride = state.repository.getRideById(b.rideId);
-    if (ride == null) return const SizedBox.shrink();
-    final driver = state.repository.getUserById(b.driverId);
-
     return Card(
       margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
       child: ListTile(
         contentPadding: const EdgeInsets.all(14),
         isThreeLine: true,
-        leading: Avatar(name: driver?.name ?? 'D', radius: 22),
+        leading: Avatar(name: b.driverName ?? 'D', radius: 22),
         title: Row(
           children: [
             Expanded(
               child: Text(
-                '${ride.origin} → ${ride.destination}',
+                '${b.rideOrigin} → ${b.rideDestination}',
                 style: const TextStyle(fontWeight: FontWeight.w700),
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
@@ -194,11 +227,11 @@ class _MyRidesScreenState extends State<MyRidesScreen> {
         subtitle: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('${driver?.name ?? 'Driver'} • ${state.formatTime(ride.departureTime)} • ${b.seatsBooked} seat'),
+            Text('${b.driverName ?? 'Driver'} • ${b.rideDepartureAt != null ? state.formatTime(b.rideDepartureAt!) : ''} • ${b.seatsBooked} seat'),
             const SizedBox(height: 4),
             Text(
               b.status == BookingStatus.accepted
-                  ? 'Ride PIN: ${ride.ridePin}'
+                  ? 'Ride PIN: ${b.ridePin}'
                   : 'Contribution: Rs. ${b.amountPaid.toStringAsFixed(0)}',
               style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
             ),
@@ -207,7 +240,14 @@ class _MyRidesScreenState extends State<MyRidesScreen> {
         trailing: switch (b.status) {
           BookingStatus.completed => IconButton(
               icon: const Icon(Icons.star, color: Colors.amber),
-              onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => RatingScreen(ride: ride))),
+              onPressed: () {
+                final ride = state.myRides
+                    .where((r) => r.rideId == b.rideId)
+                    .firstOrNull;
+                if (ride != null) {
+                  Navigator.push(context, MaterialPageRoute(builder: (_) => RatingScreen(ride: ride)));
+                }
+              },
             ),
           BookingStatus.requested || BookingStatus.accepted || BookingStatus.checkedIn => Column(
               mainAxisSize: MainAxisSize.min,
@@ -230,7 +270,6 @@ class _MyRidesScreenState extends State<MyRidesScreen> {
               child: StatusChip(label: b.status.name, color: Colors.grey),
             ),
         },
-        onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => RideDetailScreen(ride: ride))),
       ),
     );
   }

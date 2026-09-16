@@ -21,8 +21,19 @@ class _CreateRideScreenState extends State<CreateRideScreen> {
   String? _selectedVehicleId;
   String _notes = '';
   bool _recurring = false;
+  bool _submitting = false;
+  bool _campusDefaultsSet = false;
   final List<String> _recurringDays = [];
   final List<String> _conditions = ['University students only', 'No smoking'];
+
+  void _ensureCampusDefaults(List<Campus> campuses) {
+    if (_campusDefaultsSet || campuses.isEmpty) return;
+    _campusDefaultsSet = true;
+    _from = campuses.first.campusId;
+    if (campuses.length > 1) {
+      _to = campuses[1].campusId;
+    }
+  }
 
   static const _allConditions = [
     'University students only',
@@ -49,42 +60,52 @@ class _CreateRideScreenState extends State<CreateRideScreen> {
     if (picked != null) setState(() => _departure = picked);
   }
 
-  void _publish() {
+  Future<void> _publish() async {
     final state = context.read<AppStateProvider>();
-    if (!state.canCreateRide()) {
-      showAppSnack(context, 'You must be a verified driver to offer rides.', error: true);
-      return;
+    setState(() => _submitting = true);
+    try {
+      if (!state.canCreateRide()) {
+        throw Exception('You must be a verified driver to offer rides.');
+      }
+      if (_selectedVehicleId == null) {
+        throw Exception('Please select a vehicle.');
+      }
+      final vehicles = state.myVehicles;
+      final vehicle = vehicles.where((v) => v.vehicleId == _selectedVehicleId).firstOrNull;
+      if (vehicle == null || !vehicle.isVerified) {
+        throw Exception('Vehicle must be verified before creating a ride.');
+      }
+      final departureDateTime = DateTime(_date.year, _date.month, _date.day, _departure.hour, _departure.minute);
+      await state.createRide(
+        originCampusId: _from,
+        destinationCampusId: _to,
+        departureDate: _date,
+        departureTime: departureDateTime,
+        vehicleId: _selectedVehicleId!,
+        availableSeats: _seats,
+        contributionPerSeat: _contribution,
+        conditions: _conditions,
+        additionalNotes: _notes.trim(),
+        recurringRide: _recurring,
+        recurringDays: _recurringDays,
+      );
+      if (!mounted) return;
+      showAppSnack(context, 'Ride published!');
+      Navigator.of(context).pop();
+    } on Exception catch (e) {
+      if (!mounted) return;
+      showAppSnack(context, e.toString().replaceFirst('Exception: ', ''), error: true);
+    } finally {
+      if (mounted) setState(() => _submitting = false);
     }
-    if (_selectedVehicleId == null) {
-      showAppSnack(context, 'Please select a vehicle.', error: true);
-      return;
-    }
-    final vehicle = state.repository.getVehicleById(_selectedVehicleId!);
-    if (!vehicle!.isVerified) {
-      showAppSnack(context, 'Vehicle must be verified before creating a ride.', error: true);
-      return;
-    }
-    final departureDateTime = DateTime(_date.year, _date.month, _date.day, _departure.hour, _departure.minute);
-    state.createRide(
-      originCampusId: _from,
-      destinationCampusId: _to,
-      departureDate: _date,
-      departureTime: departureDateTime,
-      vehicleId: _selectedVehicleId!,
-      availableSeats: _seats,
-      contributionPerSeat: _contribution,
-      conditions: _conditions,
-      additionalNotes: _notes.trim(),
-      recurringRide: _recurring,
-      recurringDays: _recurringDays,
-    );
-    showAppSnack(context, 'Ride published!');
-    Navigator.of(context).pop();
   }
 
   @override
   Widget build(BuildContext context) {
-    final vehicles = context.watch<AppStateProvider>().getMyVehicles();
+    final state = context.watch<AppStateProvider>();
+    final campuses = state.campuses;
+    _ensureCampusDefaults(campuses);
+    final vehicles = state.myVehicles;
     if (_selectedVehicleId == null && vehicles.isNotEmpty) {
       _selectedVehicleId = vehicles.first.vehicleId;
     }
@@ -233,8 +254,10 @@ class _CreateRideScreenState extends State<CreateRideScreen> {
           ),
           const SizedBox(height: 24),
           FilledButton.icon(
-            onPressed: _publish,
-            icon: const Icon(Icons.publish),
+            onPressed: _submitting ? null : _publish,
+            icon: _submitting
+                ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                : const Icon(Icons.publish),
             label: const Text('Publish Ride'),
           ),
         ],
@@ -245,10 +268,14 @@ class _CreateRideScreenState extends State<CreateRideScreen> {
   Widget _section(String title) => Text(title, style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 15));
 
   Widget _dropdown(String label, String value, ValueChanged<String> onChanged) {
+    final campuses = context.watch<AppStateProvider>().campuses;
+    if (campuses.isEmpty) {
+      return const SizedBox(height: 56, child: Center(child: Text('Loading campuses…')));
+    }
     return DropdownButtonFormField<String>(
-      initialValue: value,
+      initialValue: campuses.any((c) => c.campusId == value) ? value : campuses.first.campusId,
       decoration: InputDecoration(labelText: label),
-      items: Campus.sampleCampuses.map((c) => DropdownMenuItem(value: c.campusId, child: Text(c.campusName))).toList(),
+      items: campuses.map((c) => DropdownMenuItem(value: c.campusId, child: Text(c.campusName))).toList(),
       onChanged: (v) {
         if (v != null) onChanged(v);
       },

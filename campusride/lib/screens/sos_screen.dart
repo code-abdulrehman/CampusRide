@@ -14,11 +14,6 @@ class _SosScreenState extends State<SosScreen> {
   bool _triggered = false;
 
   void _trigger() {
-    final state = context.read<AppStateProvider>();
-    state.addNotificationForCurrentUser(
-      title: 'SOS Alert Sent',
-      message: 'Your emergency contact and institute security have been notified with your ride details.',
-    );
     setState(() => _triggered = true);
     showAppSnack(context, 'SOS triggered — help is on the way.');
   }

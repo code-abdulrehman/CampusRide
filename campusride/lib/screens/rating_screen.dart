@@ -29,10 +29,10 @@ class _RatingScreenState extends State<RatingScreen> {
 
   void _submit() {
     final state = context.read<AppStateProvider>();
-    final driver = state.repository.getRideById(widget.ride.rideId)!.driverId;
+    final driverId = widget.ride.driver?.userId ?? widget.ride.driverId;
     state.submitRating(
       rideId: widget.ride.rideId,
-      rateeId: driver,
+      rateeId: driverId,
       overallRating: _overall.toDouble(),
       punctuality: _punctuality.toDouble(),
       behaviour: _behaviour.toDouble(),
@@ -45,10 +45,9 @@ class _RatingScreenState extends State<RatingScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final ride = widget.ride;
+    final driver = ride.driver;
     final state = context.watch<AppStateProvider>();
-    final ride = state.repository.getRideById(widget.ride.rideId);
-    if (ride == null) return const SizedBox();
-    final driver = state.repository.getUserById(ride.driverId);
 
     return Scaffold(
       appBar: AppBar(title: const Text('Rate Your Ride')),

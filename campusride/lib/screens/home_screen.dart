@@ -20,6 +20,16 @@ class _HomeScreenState extends State<HomeScreen> {
   TimeOfDay _start = const TimeOfDay(hour: 7, minute: 30);
   TimeOfDay _end = const TimeOfDay(hour: 8, minute: 30);
   int _seats = 1;
+  bool _campusDefaultsSet = false;
+
+  void _ensureCampusDefaults(List<Campus> campuses) {
+    if (_campusDefaultsSet || campuses.isEmpty) return;
+    _campusDefaultsSet = true;
+    _from = campuses.first.campusId;
+    if (campuses.length > 1) {
+      _to = campuses[1].campusId;
+    }
+  }
 
   Future<void> _pickDate() async {
     final picked = await showDatePicker(
@@ -64,8 +74,11 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final greetings = _greeting();
-    final userName = context.watch<AppStateProvider>().currentUser?.name ?? 'Student';
+    final greeting = _greeting();
+    final appState = context.watch<AppStateProvider>();
+    final campusList = appState.campuses;
+    _ensureCampusDefaults(campusList);
+    final userName = appState.currentUser?.name ?? 'Student';
     return Scaffold(
       appBar: AppBar(
         title: const Text('CampusRide'),
@@ -79,7 +92,7 @@ class _HomeScreenState extends State<HomeScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text('$greetings, $userName 👋',
+                Text('$greeting, $userName 👋',
                     style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w800)),
                 const SizedBox(height: 4),
                 Text('Find a campus ride or share your seats.',
@@ -102,7 +115,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       const SizedBox(width: 8),
                       const Text('From', style: TextStyle(fontSize: 12, color: Colors.black54)),
                       const SizedBox(width: 8),
-                      Expanded(child: _campusDropdown(isFrom: true)),
+                      Expanded(child: _campusDropdown(isFrom: true, campuses: campusList)),
                     ],
                   ),
                   const Padding(
@@ -118,7 +131,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       const SizedBox(width: 8),
                       const Text('To', style: TextStyle(fontSize: 12, color: Colors.black54)),
                       const SizedBox(width: 8),
-                      Expanded(child: _campusDropdown(isFrom: false)),
+                      Expanded(child: _campusDropdown(isFrom: false, campuses: campusList)),
                     ],
                   ),
                   const Divider(height: 28),
@@ -182,7 +195,7 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
             ),
           ),
-          if (context.watch<AppStateProvider>().currentUser?.userId == 'admin1')
+          if (appState.currentUser?.isAdmin ?? false)
             _adminQuickCard(context),
         ],
       ),
@@ -204,20 +217,19 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  Widget _campusDropdown({required bool isFrom}) {
+  Widget _campusDropdown({required bool isFrom, required List<Campus> campuses}) {
     return DropdownButtonHideUnderline(
       child: DropdownButton<String>(
         value: isFrom ? _from : _to,
         isExpanded: true,
         style: const TextStyle(color: Colors.black, fontSize: 15, fontWeight: FontWeight.w600),
-        items: Campus.sampleCampuses
+        items: campuses
             .map((c) => DropdownMenuItem(value: c.campusId, child: Text(c.campusName)))
             .toList(),
         onChanged: (v) {
           if (v == null) return;
           setState(() {
             if (isFrom) {
-              if (v == _to) _to = _from == v ? _to : _to;
               _from = v;
             } else {
               _to = v;

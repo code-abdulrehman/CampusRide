@@ -22,6 +22,8 @@ const envSchema = z.object({
   LOG_LEVEL: z
     .enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent'])
     .default('info'),
+  NGROK_ENABLED: z.enum(['true', 'false']).default('false'),
+  NGROK_SUBDOMAIN: z.string().optional(),
 });
 
 const parsed = envSchema.safeParse(process.env);

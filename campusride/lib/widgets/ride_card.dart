@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import '../models/ride.dart';
-import '../services/data_repository.dart';
 import 'common_widgets.dart';
 
 class RideCard extends StatelessWidget {
@@ -12,9 +11,8 @@ class RideCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final repo = DataRepository.instance;
-    final driver = repo.getUserById(ride.driverId);
-    final vehicle = repo.getVehicleById(ride.vehicleId);
+    final driver = ride.driver;
+    final vehicle = ride.vehicle;
     final driverName = driver?.name ?? 'Driver';
 
     return Card(
@@ -37,14 +35,16 @@ class RideCard extends StatelessWidget {
                       children: [
                         Row(
                           children: [
-                            Text(driverName, style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 15)),
+                            Flexible(
+                              child: Text(driverName, style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 15), maxLines: 1, overflow: TextOverflow.ellipsis),
+                            ),
                             const SizedBox(width: 6),
-                            if (driver?.isDriverVerified == true)
+                            if (driver?.role == 'STUDENT' || driver?.isDriverVerified == true)
                               const Icon(Icons.verified, size: 14, color: Colors.green),
                           ],
                         ),
                         Text(
-                          vehicle?.displayName ?? 'Honda City',
+                          vehicle?.displayName ?? 'Vehicle',
                           style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
                         ),
                       ],

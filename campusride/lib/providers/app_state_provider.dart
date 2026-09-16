@@ -1,117 +1,216 @@
 import 'package:flutter/foundation.dart';
-import 'package:flutter/material.dart' show TimeOfDay;
 import '../models/enums.dart';
 import '../models/user.dart';
 import '../models/vehicle.dart';
 import '../models/ride.dart';
 import '../models/ride_request.dart';
 import '../models/booking.dart';
-import '../models/rating.dart';
-import '../models/report.dart';
 import '../models/app_notification.dart';
 import '../models/campus.dart';
 import '../services/data_repository.dart';
+import '../services/api_client.dart';
 
 class AppStateProvider extends ChangeNotifier {
   final DataRepository repository = DataRepository.instance;
 
   CampusUser? currentUser;
-  int _idCounter = 1000;
 
-  String _nextId(String prefix) => '$prefix${++_idCounter}';
+  // Cached collections for fast screen reads
+  List<Ride> myRides = [];
+  List<Booking> myBookings = [];
+  List<AppNotification> notifications = [];
+  List<Vehicle> myVehicles = [];
+  List<RideRequest> myRideRequests = [];
+  List<Map<String, dynamic>> searchResults = [];
+
+  bool isLoading = false;
+  String? errorMessage;
+  int unreadCount = 0;
+  bool initializing = true;
+
+  final Set<String> _ratedRideKeys = {};
+
+  CampusUser? userById(String id) {
+    if (currentUser?.userId == id) return currentUser;
+    return null;
+  }
+
+  void clearError() {
+    errorMessage = null;
+    notifyListeners();
+  }
+
+  Future<T> _guard<T>(Future<T> Function() fn) async {
+    isLoading = true;
+    errorMessage = null;
+    notifyListeners();
+    try {
+      final result = await fn();
+      return result;
+    } on ApiException catch (e) {
+      errorMessage = e.message;
+      rethrow;
+    } finally {
+      isLoading = false;
+      notifyListeners();
+    }
+  }
+
+  // --- Init / session ---
+  Future<void> init({bool force = false}) async {
+    initializing = true;
+    notifyListeners();
+    await repository.api.loadSession();
+    if (repository.api.isLoggedIn) {
+      try {
+        await syncAll();
+      } catch (_) {
+        // token may be expired; user can log in again
+      }
+    }
+    initializing = false;
+    notifyListeners();
+  }
+
+  Future<void> syncAll() async {
+    await loadCampuses();
+    await refreshCurrentUser();
+    await Future.wait([
+      loadMyRides(),
+      loadMyBookings(),
+      loadMyVehicles(),
+      loadNotifications(),
+      loadMyRideRequests(),
+    ]);
+  }
 
   // --- Auth ---
-  bool login(String email, {String? password}) {
-    final user = repository.login(email, password ?? '');
-    if (user == null) return false;
-    currentUser = user;
-    notifyListeners();
-    return true;
+  Future<bool> login(String email, String password) {
+    return _guard(() async {
+      final result = await repository.login(email, password);
+      currentUser = result.user;
+      notifyListeners();
+      await syncAll();
+      notifyListeners();
+      return true;
+    });
   }
 
-  void logout() {
+  Future<void> logout() async {
+    final refresh = repository.api.refreshToken ?? '';
+    await repository.logout(refresh);
     currentUser = null;
+    myRides = [];
+    myBookings = [];
+    notifications = [];
+    myVehicles = [];
+    myRideRequests = [];
+    searchResults = [];
+    unreadCount = 0;
     notifyListeners();
   }
 
-  CampusUser register({
+  Future<CampusUser> register({
     required String name,
     required String email,
     required String studentId,
+    String? password,
     String? phone,
     String? department,
     String? semester,
     String? mainCampus,
   }) {
-    final user = CampusUser(
-      userId: _nextId('u'),
-      name: name,
-      email: email,
-      phone: phone ?? '',
-      studentId: studentId,
-      department: department ?? '',
-      semester: semester ?? '',
-      mainCampus: mainCampus ?? 'Campus A',
-      verificationStatus: UserVerificationStatus.studentPending,
-    );
-    repository.addUser(user);
+    return _guard(() async {
+      final result = await repository.register(
+        name: name,
+        email: email,
+        studentId: studentId,
+        password: password,
+        phone: phone,
+        department: department,
+        semester: semester,
+        mainCampusId: mainCampus,
+      );
+      currentUser = result.user;
+      notifyListeners();
+      await syncAll();
+      notifyListeners();
+      return result.user;
+    });
+  }
+
+  Future<void> refreshCurrentUser() async {
+    final user = await repository.getCurrentUser();
     currentUser = user;
-    repository.addNotification(AppNotification(
-      id: _nextId('n'),
-      userId: user.userId,
-      title: 'Welcome to CampusRide!',
-      message: 'Your student verification is in progress. An admin will review it soon.',
-      type: AppNotificationType.general,
-    ));
-    notifyListeners();
-    return user;
-  }
-
-  void updateProfile(CampusUser updated) {
-    repository.addUser(updated);
-    currentUser = repository.getUserById(updated.userId);
     notifyListeners();
   }
 
-  void setEmergencyContact(String name, String phone) {
-    if (currentUser == null) return;
-    currentUser!.emergencyContactName = name;
-    currentUser!.emergencyContactPhone = phone;
-    repository.addUser(currentUser!);
-    notifyListeners();
+  // --- Profile ---
+  Future<void> updateProfile({
+    String? name,
+    String? phone,
+    String? department,
+    String? semester,
+  }) {
+    return _guard(() async {
+      if (currentUser == null) throw ApiException(statusCode: 401, code: 'NO_SESSION', message: 'Not logged in');
+      currentUser!
+        ..name = name ?? currentUser!.name
+        ..phone = phone ?? currentUser!.phone
+        ..department = department ?? currentUser!.department
+        ..semester = semester ?? currentUser!.semester;
+      final updated = await repository.updateProfile(currentUser!);
+      currentUser = updated;
+      notifyListeners();
+    });
+  }
+
+  Future<void> setEmergencyContact(String name, String phone) {
+    return _guard(() async {
+      await repository.setEmergencyContact(name, phone);
+      currentUser!
+        ..emergencyContactName = name
+        ..emergencyContactPhone = phone;
+      notifyListeners();
+    });
+  }
+
+  // --- Campuses ---
+  Future<void> loadCampuses() async {
+    try {
+      await repository.fetchCampuses();
+      notifyListeners();
+    } catch (_) {
+      // keep defaults
+    }
+  }
+
+  List<Campus> get campuses => repository.campuses;
+
+  String campusName(String id) {
+    for (final c in campuses) {
+      if (c.campusId == id) return c.campusName;
+    }
+    return id;
   }
 
   // --- Verification ---
-  void submitStudentVerification() {
-    if (currentUser == null) return;
-    currentUser!.verificationStatus = UserVerificationStatus.studentVerified;
-    repository.addUser(currentUser!);
-    repository.addNotification(AppNotification(
-      id: _nextId('n'),
-      userId: currentUser!.userId,
-      title: 'Student Verified',
-      message: 'Congratulations! Your student account has been verified. You can now book rides.',
-      type: AppNotificationType.general,
-    ));
-    notifyListeners();
+  Future<void> submitStudentVerification() async {
+    // Students are auto-verified at registration on the backend.
+    await refreshCurrentUser();
   }
 
-  void submitDriverVerification() {
-    if (currentUser == null) return;
-    currentUser!.verificationStatus = UserVerificationStatus.driverVerified;
-    repository.addUser(currentUser!);
-    repository.addNotification(AppNotification(
-      id: _nextId('n'),
-      userId: currentUser!.userId,
-      title: 'Driver Verified',
-      message: 'You are now a verified driver on CampusRide!',
-      type: AppNotificationType.general,
-    ));
-    notifyListeners();
+  Future<void> submitDriverVerification() async {
+    // Driver verification is handled by admin. Refresh to show latest status.
+    await refreshCurrentUser();
   }
 
-  // --- Vehicle ---
-  Vehicle addVehicle({
+  bool canCreateRide() {
+    return currentUser?.isDriverVerified ?? false;
+  }
+
+  // --- Vehicles ---
+  Future<Vehicle> addVehicle({
     required String company,
     required String model,
     required int modelYear,
@@ -119,40 +218,32 @@ class AppStateProvider extends ChangeNotifier {
     required String registrationNumber,
     required int totalSeats,
   }) {
-    final vehicle = Vehicle(
-      vehicleId: _nextId('v'),
-      ownerUserId: currentUser?.userId ?? '',
-      company: company,
-      model: model,
-      modelYear: modelYear,
-      color: color,
-      registrationNumber: registrationNumber,
-      totalSeats: totalSeats,
-      passengerCapacity: totalSeats - 1,
-    );
-    repository.addVehicle(vehicle);
-    repository.addNotification(AppNotification(
-      id: _nextId('n'),
-      userId: currentUser?.userId ?? '',
-      title: 'Vehicle Submitted',
-      message: 'Your vehicle (${vehicle.displayName}) is pending verification by the admin.',
-      type: AppNotificationType.general,
-    ));
-    notifyListeners();
-    return vehicle;
+    return _guard(() async {
+      final vehicle = await repository.addVehicle(
+        company: company,
+        model: model,
+        modelYear: modelYear,
+        color: color,
+        registrationNumber: registrationNumber,
+        totalSeats: totalSeats,
+      );
+      myVehicles.add(vehicle);
+      notifyListeners();
+      return vehicle;
+    });
   }
 
-  bool canCreateRide() {
-    return currentUser?.isDriverVerified ?? false;
+  Future<void> loadMyVehicles() async {
+    try {
+      myVehicles = await repository.getMyVehicles();
+      notifyListeners();
+    } catch (_) {}
   }
 
-  List<Vehicle> getMyVehicles() {
-    final uid = currentUser?.userId ?? '';
-    return repository.getVehiclesByOwner(uid);
-  }
+  List<Vehicle> getMyVehicles() => myVehicles;
 
   // --- Rides ---
-  Ride createRide({
+  Future<Ride> createRide({
     required String originCampusId,
     required String destinationCampusId,
     required DateTime departureDate,
@@ -165,58 +256,104 @@ class AppStateProvider extends ChangeNotifier {
     bool recurringRide = false,
     List<String> recurringDays = const [],
   }) {
-    final originCampus = _campusName(originCampusId);
-    final destinationCampus = _campusName(destinationCampusId);
-    final ride = Ride(
-      rideId: _nextId('r'),
-      driverId: currentUser?.userId ?? '',
-      vehicleId: vehicleId,
-      origin: originCampus,
-      destination: destinationCampus,
-      originCampusId: originCampusId,
-      destinationCampusId: destinationCampusId,
-      departureDate: departureDate,
-      departureTime: departureTime,
-      availableSeats: availableSeats,
-      contributionPerSeat: contributionPerSeat,
-      conditions: conditions,
-      additionalNotes: additionalNotes,
-      recurringRide: recurringRide,
-      recurringDays: recurringDays,
+    final origin = campusName(originCampusId);
+    final destination = campusName(destinationCampusId);
+    final departureAt = DateTime(
+      departureDate.year,
+      departureDate.month,
+      departureDate.day,
+      departureTime.hour,
+      departureTime.minute,
     );
-    repository.addRide(ride);
-    _notifyRideSeekers(ride);
-    notifyListeners();
-    return ride;
-  }
-
-  String _campusName(String id) {
-    for (final c in Campus.sampleCampuses) {
-      if (c.campusId == id) return c.campusName;
-    }
-    return id;
-  }
-
-  void _notifyRideSeekers(Ride ride) {
-    final matching = repository.rideRequests.where((req) {
-      return req.requestStatus == RequestStatus.pending &&
-          req.origin == _campusName(ride.originCampusId) &&
-          req.destination == _campusName(ride.destinationCampusId);
+    return _guard(() async {
+      final ride = await repository.createRide(
+        originCampusId: originCampusId,
+        destinationCampusId: destinationCampusId,
+        origin: origin,
+        destination: destination,
+        departureAt: departureAt,
+        vehicleId: vehicleId,
+        availableSeats: availableSeats,
+        contributionPerSeat: contributionPerSeat,
+        conditions: conditions,
+        additionalNotes: additionalNotes,
+        recurring: recurringRide,
+        recurringDays: recurringDays,
+      );
+      myRides.insert(0, ride);
+      notifyListeners();
+      return ride;
     });
-    for (final req in matching) {
-      repository.addNotification(AppNotification(
-        id: _nextId('n'),
-        userId: req.studentId,
-        title: 'New Ride Available!',
-        message: 'A ride from ${ride.origin} to ${ride.destination} at ${formatTime(ride.departureTime)} is now available.',
-        type: AppNotificationType.general,
-        relatedRideId: ride.rideId,
-      ));
-    }
   }
 
-  // --- Ride Request ---
-  RideRequest createRideRequest({
+  Future<List<Map<String, dynamic>>> searchRides({
+    required String fromCampusId,
+    required String toCampusId,
+    required DateTime date,
+    int? maxDepartureHour,
+    int? maxDepartureMinutes,
+    int seatsNeeded = 1,
+  }) {
+    return _guard(() async {
+      final results = await repository.searchRides(
+        fromCampusId: fromCampusId,
+        toCampusId: toCampusId,
+        date: date,
+        maxDepartureHour: maxDepartureHour,
+        maxDepartureMinutes: maxDepartureMinutes,
+        seatsNeeded: seatsNeeded,
+      );
+      searchResults = results;
+      notifyListeners();
+      return results;
+    });
+  }
+
+  Future<Ride?> getRideById(String id) async {
+    return _guard(() => repository.getRideById(id));
+  }
+
+  Future<void> loadMyRides() async {
+    try {
+      final driverId = currentUser?.userId ?? '';
+      final rides = await repository.getRidesByDriver(driverId);
+      myRides = rides;
+      notifyListeners();
+    } catch (_) {}
+  }
+
+  Future<Ride> cancelRide(Ride ride) {
+    return _guard(() async {
+      final updated = await repository.cancelRide(ride.rideId);
+      _replaceRide(updated);
+      return updated;
+    });
+  }
+
+  Future<Ride> startRide(Ride ride) {
+    return _guard(() async {
+      final updated = await repository.startRide(ride.rideId);
+      _replaceRide(updated);
+      return updated;
+    });
+  }
+
+  Future<Ride> completeRide(Ride ride) {
+    return _guard(() async {
+      final updated = await repository.completeRide(ride.rideId);
+      _replaceRide(updated);
+      return updated;
+    });
+  }
+
+  void _replaceRide(Ride updated) {
+    final idx = myRides.indexWhere((r) => r.rideId == updated.rideId);
+    if (idx >= 0) myRides[idx] = updated;
+    notifyListeners();
+  }
+
+  // --- Ride Requests ---
+  Future<RideRequest> createRideRequest({
     required String originCampusId,
     required String destinationCampusId,
     required DateTime preferredDate,
@@ -228,154 +365,112 @@ class AppStateProvider extends ChangeNotifier {
     int requiredSeats = 1,
     double maxBudget = 300.0,
   }) {
-    final request = RideRequest(
-      requestId: _nextId('req'),
-      studentId: currentUser?.userId ?? '',
-      origin: _campusName(originCampusId),
-      destination: _campusName(destinationCampusId),
-      preferredDate: preferredDate,
-      preferredStartTime: TimeOfDay(hour: startHour, minute: startMinute),
-      latestDepartureTime: TimeOfDay(hour: latestHour, minute: latestMinute),
-      requiredArrivalTime: requiredArrivalTime,
-      requiredSeats: requiredSeats,
-      maximumBudget: maxBudget,
+    final origin = campusName(originCampusId);
+    final destination = campusName(destinationCampusId);
+    final earliest = DateTime(
+      preferredDate.year, preferredDate.month, preferredDate.day, startHour, startMinute,
     );
-    repository.addRideRequest(request);
-    notifyListeners();
-    return request;
+    final latest = DateTime(
+      preferredDate.year, preferredDate.month, preferredDate.day, latestHour, latestMinute,
+    );
+    return _guard(() async {
+      final request = await repository.createRideRequest(
+        originCampusId: originCampusId,
+        destinationCampusId: destinationCampusId,
+        origin: origin,
+        destination: destination,
+        earliestDeparture: earliest,
+        latestDeparture: latest,
+        requiredSeats: requiredSeats,
+        maxBudget: maxBudget,
+      );
+      myRideRequests.insert(0, request);
+      notifyListeners();
+      return request;
+    });
   }
 
-  // --- Booking ---
-  Booking requestSeat(Ride ride, {int seats = 1, String pickupPoint = 'Campus Gate'}) {
+  Future<void> loadMyRideRequests() async {
+    try {
+      myRideRequests = await repository.getMyRideRequests();
+      notifyListeners();
+    } catch (_) {}
+  }
+
+  // --- Bookings ---
+  Future<Booking> requestSeat(Ride ride, {int seats = 1, String pickupPoint = 'Campus Gate'}) {
     if (!currentUser!.isStudentVerified) {
-      throw Exception('Your student account must be verified before booking. Verify in your profile first.');
+      return Future.error(Exception(
+          'Your student account must be verified before booking. Register using your university email.'));
     }
-    final booking = Booking(
-      bookingId: _nextId('b'),
-      rideId: ride.rideId,
-      passengerId: currentUser?.userId ?? '',
-      driverId: ride.driverId,
-      status: BookingStatus.requested,
-      seatsBooked: seats,
-      amountPaid: ride.contributionPerSeat * seats,
-      pickupPoint: pickupPoint,
-    );
-    repository.addBooking(booking);
-    repository.addNotification(AppNotification(
-      id: _nextId('n'),
-      userId: ride.driverId,
-      title: 'New Seat Request',
-      message: '${currentUser?.name} requested $seats seat(s) on your ${ride.origin} → ${ride.destination} ride.',
-      type: AppNotificationType.rideRequest,
-      relatedRideId: ride.rideId,
-    ));
-    notifyListeners();
-    return booking;
+    return _guard(() async {
+      final booking = await repository.requestBooking(ride.rideId, seats: seats);
+      myBookings.insert(0, booking);
+      notifyListeners();
+      return booking;
+    });
   }
 
-  void acceptBooking(Booking booking) {
-    repository.updateBookingStatus(booking.bookingId, BookingStatus.accepted);
-    repository.updateRideSeats(booking.rideId, booking.seatsBooked);
-    final ride = repository.getRideById(booking.rideId);
-    repository.addNotification(AppNotification(
-      id: _nextId('n'),
-      userId: booking.passengerId,
-      title: 'Seat Confirmed!',
-      message: 'Your seat on ${ride?.origin} → ${ride?.destination} has been confirmed. Ride PIN: ${ride?.ridePin}',
-      type: AppNotificationType.rideAccepted,
-      relatedRideId: booking.rideId,
-    ));
-    notifyListeners();
+  Future<void> acceptBooking(Booking booking) {
+    return _guard(() async {
+      final updated = await repository.acceptBooking(booking.bookingId);
+      _replaceBooking(updated);
+    });
   }
 
-  void rejectBooking(Booking booking) {
-    repository.updateBookingStatus(booking.bookingId, BookingStatus.rejected);
-    repository.addNotification(AppNotification(
-      id: _nextId('n'),
-      userId: booking.passengerId,
-      title: 'Booking Rejected',
-      message: 'The driver could not accept your booking request.',
-      type: AppNotificationType.rideRejected,
-    ));
-    notifyListeners();
+  Future<void> rejectBooking(Booking booking) {
+    return _guard(() async {
+      final updated = await repository.rejectBooking(booking.bookingId);
+      _replaceBooking(updated);
+    });
   }
 
-  void cancelBooking(Booking booking) {
-    final wasAccepted = booking.status == BookingStatus.accepted ||
-        booking.status == BookingStatus.checkedIn ||
-        booking.status == BookingStatus.rideStarted;
-    repository.updateBookingStatus(booking.bookingId, BookingStatus.cancelled);
-    if (wasAccepted) {
-      final ride = repository.getRideById(booking.rideId);
-      if (ride != null && ride.rideStatus != RideStatus.completed) {
-        ride.availableSeats += booking.seatsBooked;
-        ride.rideStatus = RideStatus.open;
-      }
-      final driver = repository.getUserById(ride?.driverId ?? '');
-      if (driver != null && driver.userId == currentUser?.userId) {
-        driver.cancelledRides++;
-        repository.addUser(driver);
-      }
-    }
-    repository.addNotification(AppNotification(
-      id: _nextId('n'),
-      userId: booking.driverId,
-      title: 'Booking Cancelled',
-      message: 'A passenger cancelled their seat on your ride. A seat has been freed up.',
-      type: AppNotificationType.general,
-      relatedRideId: booking.rideId,
-    ));
-    notifyListeners();
+  Future<void> cancelBooking(Booking booking) {
+    return _guard(() async {
+      final updated = await repository.cancelBooking(booking.bookingId);
+      _replaceBooking(updated);
+    });
   }
 
-  void checkIn(Booking booking, String pin) {
-    final ride = repository.getRideById(booking.rideId);
-    if (pin.trim() != ride?.ridePin) {
-      throw Exception('Invalid PIN. Please verify the ride PIN with your driver.');
-    }
-    repository.updateBookingStatus(booking.bookingId, BookingStatus.checkedIn);
-    notifyListeners();
+  Future<Booking> checkIn(Booking booking, String pin) {
+    return _guard(() async {
+      final updated = await repository.checkinBooking(booking.bookingId, pin);
+      _replaceBooking(updated);
+      return updated;
+    });
   }
 
-  void startRide(Ride ride) {
-    ride.rideStatus = RideStatus.started;
-    for (final b in repository.getBookingsByRide(ride.rideId)) {
-      if (b.status == BookingStatus.accepted || b.status == BookingStatus.checkedIn) {
-        b.status = BookingStatus.rideStarted;
-      }
-      repository.addNotification(AppNotification(
-        id: _nextId('n'),
-        userId: b.passengerId,
-        title: 'Ride Started',
-        message: 'Your ride ${ride.origin} → ${ride.destination} has started. Stay safe!',
-        type: AppNotificationType.rideStarted,
-        relatedRideId: ride.rideId,
-      ));
+  Future<void> markNoShow(Booking booking) {
+    return _guard(() async {
+      final updated = await repository.noShowBooking(booking.bookingId);
+      _replaceBooking(updated);
+    });
+  }
+
+  void _replaceBooking(Booking updated) {
+    final idx = myBookings.indexWhere((b) => b.bookingId == updated.bookingId);
+    if (idx >= 0) {
+      myBookings[idx] = updated;
+    } else {
+      myBookings.add(updated);
     }
     notifyListeners();
   }
 
-  void completeRide(Ride ride) {
-    ride.rideStatus = RideStatus.completed;
-    for (final b in repository.getBookingsByRide(ride.rideId)) {
-      if (b.status == BookingStatus.accepted ||
-          b.status == BookingStatus.checkedIn ||
-          b.status == BookingStatus.rideStarted) {
-        b.status = BookingStatus.completed;
-      }
-    }
-    final driver = repository.getUserById(ride.driverId);
-    if (driver != null) driver.completedRides++;
-    notifyListeners();
+  Future<void> loadMyBookings() async {
+    try {
+      final raw = await repository.getMyBookings();
+      myBookings = raw.map((b) => Booking.fromApi(b)).toList();
+      notifyListeners();
+    } catch (_) {}
   }
 
-  void markNoShow(Booking booking) {
-    repository.updateBookingStatus(booking.bookingId, BookingStatus.noShow);
-    notifyListeners();
+  Future<List<Map<String, dynamic>>> getBookingsByRide(String rideId) async {
+    return _guard(() => repository.getBookingsByRide(rideId));
   }
 
   // --- Ratings ---
-  void submitRating({
+  Future<void> submitRating({
     required String rideId,
     required String rateeId,
     required double overallRating,
@@ -384,23 +479,21 @@ class AppStateProvider extends ChangeNotifier {
     required double communication,
     String comment = '',
   }) {
-    final rating = UserRating(
-      ratingId: _nextId('rt'),
-      rideId: rideId,
-      raterId: currentUser?.userId ?? '',
-      rateeId: rateeId,
-      overallRating: overallRating,
-      punctuality: punctuality,
-      behaviour: behaviour,
-      communication: communication,
-      comment: comment,
-    );
-    repository.addRating(rating);
-    if (currentUser != null) {
-      // mark that this user rated this ride to avoid duplicates in UI
-      _ratedRideKeys.add('${currentUser!.userId}:$rideId');
-    }
-    notifyListeners();
+    return _guard(() async {
+      await repository.submitRating(
+        rideId: rideId,
+        rateeId: rateeId,
+        overallRating: overallRating,
+        punctuality: punctuality,
+        behaviour: behaviour,
+        communication: communication,
+        comment: comment,
+      );
+      if (currentUser != null) {
+        _ratedRideKeys.add('${currentUser!.userId}:$rideId');
+      }
+      notifyListeners();
+    });
   }
 
   bool hasRated(String rideId) {
@@ -408,97 +501,52 @@ class AppStateProvider extends ChangeNotifier {
     return _ratedRideKeys.contains('${currentUser!.userId}:$rideId');
   }
 
-  final Set<String> _ratedRideKeys = {};
-
   // --- Reports ---
-  void submitReport({
+  Future<void> submitReport({
     required String reportedUserId,
     String? rideId,
     required ReportReason reason,
     required String description,
   }) {
-    final report = UserReport(
-      reportId: _nextId('rep'),
-      reporterId: currentUser?.userId ?? '',
-      reportedUserId: reportedUserId,
-      rideId: rideId,
-      reason: reason,
-      description: description,
-    );
-    repository.addReport(report);
-    notifyListeners();
+    return _guard(() => repository.submitReport(
+          reportedUserId: reportedUserId,
+          rideId: rideId,
+          reason: reason,
+          description: description,
+        ));
   }
 
-  // --- Admin Actions ---
-  void verifyStudent(String userId) {
-    final user = repository.getUserById(userId);
-    if (user != null) {
-      user.verificationStatus = UserVerificationStatus.studentVerified;
-      repository.addUser(user);
-      repository.addNotification(AppNotification(
-        id: _nextId('n'),
-        userId: user.userId,
-        title: 'Verified!',
-        message: 'Your student verification has been approved.',
-        type: AppNotificationType.general,
-      ));
-    }
-    notifyListeners();
+  // --- Notifications ---
+  Future<void> loadNotifications() async {
+    try {
+      notifications = await repository.getNotificationsForUser(currentUser?.userId ?? '');
+      unreadCount = notifications.where((n) => !n.isRead).length;
+      notifyListeners();
+    } catch (_) {}
   }
 
-  void verifyDriver(String userId) {
-    final user = repository.getUserById(userId);
-    if (user != null) {
-      user.verificationStatus = UserVerificationStatus.driverVerified;
-      repository.addUser(user);
-      repository.addNotification(AppNotification(
-        id: _nextId('n'),
-        userId: user.userId,
-        title: 'Driver Verified',
-        message: 'Your driver profile has been approved.',
-        type: AppNotificationType.general,
-      ));
-    }
-    notifyListeners();
+  Future<void> markAllNotificationsRead() {
+    return _guard(() async {
+      await repository.markAllNotificationsRead();
+      for (final n in notifications) {
+        n.isRead = true;
+      }
+      unreadCount = 0;
+      notifyListeners();
+    });
   }
 
-  void verifyVehicle(String vehicleId) {
-    final vehicle = repository.getVehicleById(vehicleId);
-    if (vehicle != null) {
-      vehicle.verificationStatus = VehicleStatus.verified;
-      vehicle.vehicleStatus = VehicleStatus.verified;
-      repository.addNotification(AppNotification(
-        id: _nextId('n'),
-        userId: vehicle.ownerUserId,
-        title: 'Vehicle Verified',
-        message: '${vehicle.displayName} has been approved.',
-        type: AppNotificationType.general,
-      ));
-    }
-    notifyListeners();
-  }
-
-  void suspendUser(String userId) {
-    final user = repository.getUserById(userId);
-    if (user != null) user.accountStatus = AccountStatus.suspended;
-    notifyListeners();
-  }
-
-  void resolveReport(String reportId, ReportStatus status) {
-    final report = repository.reports.firstWhere((r) => r.reportId == reportId);
-    report.status = status;
-    if (status == ReportStatus.permanentBan) {
-      suspendUser(report.reportedUserId);
-    }
-    notifyListeners();
-  }
-
-  void markAllNotificationsRead() {
-    if (currentUser == null) return;
-    for (final n in repository.getNotificationsForUser(currentUser!.userId)) {
-      n.isRead = true;
-    }
-    notifyListeners();
+  Future<void> markNotificationRead(String id) async {
+    try {
+      await repository.markNotificationRead(id);
+      for (final n in notifications) {
+        if (n.id == id && !n.isRead) {
+          n.isRead = true;
+          unreadCount = unreadCount > 0 ? unreadCount - 1 : 0;
+        }
+      }
+      notifyListeners();
+    } catch (_) {}
   }
 
   void addNotificationForCurrentUser({
@@ -506,17 +554,77 @@ class AppStateProvider extends ChangeNotifier {
     required String message,
     AppNotificationType type = AppNotificationType.general,
   }) {
-    if (currentUser == null) return;
-    repository.addNotification(AppNotification(
-      id: _nextId('n'),
-      userId: currentUser!.userId,
-      title: title,
-      message: message,
-      type: type,
-    ));
+    // Local optimistic notification; server sends real ones via events.
+  }
+
+  // --- Admin ---
+  Map<String, dynamic> adminDashboard = {};
+  List<Map<String, dynamic>> adminUsers = [];
+  List<Map<String, dynamic>> pendingDrivers = [];
+  List<Map<String, dynamic>> pendingVehicles = [];
+  List<Map<String, dynamic>> adminReports = [];
+
+  Future<void> loadAdminDashboard() async {
+    adminDashboard = await repository.getAdminDashboard();
     notifyListeners();
   }
 
+  Future<void> loadAdminUsers() async {
+    adminUsers = await repository.getAdminUsers();
+    notifyListeners();
+  }
+
+  Future<void> loadPendingDrivers() async {
+    pendingDrivers = await repository.getPendingDrivers();
+    notifyListeners();
+  }
+
+  Future<void> loadPendingVehicles() async {
+    pendingVehicles = await repository.getPendingVehicles();
+    notifyListeners();
+  }
+
+  Future<void> loadAdminReports() async {
+    adminReports = await repository.getAdminReports();
+    notifyListeners();
+  }
+
+  Future<void> verifyStudent(String userId) {
+    return _guard(() async {
+      await repository.adminVerifyStudent(userId);
+      await refreshCurrentUser();
+    });
+  }
+
+  Future<void> verifyDriver(String userId) {
+    return _guard(() async {
+      await repository.adminVerifyDriver(userId);
+      await Future.wait([loadPendingDrivers(), loadAdminUsers()]);
+    });
+  }
+
+  Future<void> verifyVehicle(String vehicleId) {
+    return _guard(() async {
+      await repository.adminVerifyVehicle(vehicleId);
+      await loadPendingVehicles();
+    });
+  }
+
+  Future<void> suspendUser(String userId) {
+    return _guard(() async {
+      await repository.adminSuspendUser(userId);
+      await loadAdminUsers();
+    });
+  }
+
+  Future<void> resolveReport(String reportId, {String? status, String? adminAction}) {
+    return _guard(() async {
+      await repository.adminResolveReport(reportId, status: status, adminAction: adminAction);
+      await Future.wait([loadAdminReports(), loadAdminDashboard()]);
+    });
+  }
+
+  // --- Formatting ---
   String formatTime(DateTime time) {
     final h = time.hour > 12 ? time.hour - 12 : time.hour;
     final suffix = time.hour >= 12 ? 'PM' : 'AM';

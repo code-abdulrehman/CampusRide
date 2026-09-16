@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import '../models/campus.dart';
 import '../providers/app_state_provider.dart';
 import '../widgets/common_widgets.dart';
 
@@ -21,6 +20,7 @@ class _CreateRequestScreenState extends State<CreateRequestScreen> {
   int _latestMinute = 30;
   int _seats = 1;
   double _budget = 300;
+  bool _submitting = false;
 
   String _timeString(int h, int m) {
     final hour12 = h > 12 ? h - 12 : h;
@@ -28,26 +28,42 @@ class _CreateRequestScreenState extends State<CreateRequestScreen> {
     return '${hour12 == 0 ? 12 : hour12}:${m.toString().padLeft(2, '0')} $suffix';
   }
 
-  void _submit() {
+  Future<void> _submit() async {
     final state = context.read<AppStateProvider>();
-    state.createRideRequest(
-      originCampusId: _from,
-      destinationCampusId: _to,
-      preferredDate: _date,
-      startHour: _startHour,
-      startMinute: _startMinute,
-      latestHour: _latestHour,
-      latestMinute: _latestMinute,
-      requiredArrivalTime: DateTime(_date.year, _date.month, _date.day, 9, 0),
-      requiredSeats: _seats,
-      maxBudget: _budget,
-    );
-    showAppSnack(context, 'Ride request posted! Matching drivers will be notified.');
-    Navigator.of(context).pop();
+    setState(() => _submitting = true);
+    try {
+      await state.createRideRequest(
+        originCampusId: _from,
+        destinationCampusId: _to,
+        preferredDate: _date,
+        startHour: _startHour,
+        startMinute: _startMinute,
+        latestHour: _latestHour,
+        latestMinute: _latestMinute,
+        requiredArrivalTime: DateTime(_date.year, _date.month, _date.day, 9, 0),
+        requiredSeats: _seats,
+        maxBudget: _budget,
+      );
+      if (!mounted) return;
+      showAppSnack(context, 'Ride request posted! Matching drivers will be notified.');
+      Navigator.of(context).pop();
+    } catch (e) {
+      if (!mounted) return;
+      showAppSnack(context, '$e', error: true);
+    } finally {
+      if (mounted) setState(() => _submitting = false);
+    }
   }
 
   @override
   Widget build(BuildContext context) {
+    final campuses = context.watch<AppStateProvider>().campuses;
+    if (_from == 'campus_a' && campuses.isNotEmpty) {
+      _from = campuses.first.campusId;
+    }
+    if (_to == 'main' && campuses.length > 1) {
+      _to = campuses[1].campusId;
+    }
     return Scaffold(
       appBar: AppBar(title: const Text('I Need a Ride')),
       body: ListView(
@@ -106,8 +122,10 @@ class _CreateRequestScreenState extends State<CreateRequestScreen> {
           ),
           const SizedBox(height: 24),
           FilledButton.icon(
-            onPressed: _submit,
-            icon: const Icon(Icons.send),
+            onPressed: _submitting ? null : _submit,
+            icon: _submitting
+                ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                : const Icon(Icons.send),
             label: const Text('Post Ride Request'),
           ),
         ],
@@ -116,10 +134,14 @@ class _CreateRequestScreenState extends State<CreateRequestScreen> {
   }
 
   Widget _campusDropdown(String label, String value, ValueChanged<String> onChanged) {
+    final campuses = context.watch<AppStateProvider>().campuses;
+    if (campuses.isEmpty) {
+      return const SizedBox(height: 56, child: Center(child: Text('Loading campuses…')));
+    }
     return DropdownButtonFormField<String>(
-      initialValue: value,
+      initialValue: campuses.any((c) => c.campusId == value) ? value : campuses.first.campusId,
       decoration: InputDecoration(labelText: label),
-      items: Campus.sampleCampuses.map((c) => DropdownMenuItem(value: c.campusId, child: Text(c.campusName))).toList(),
+      items: campuses.map((c) => DropdownMenuItem(value: c.campusId, child: Text(c.campusName))).toList(),
       onChanged: (v) {
         if (v != null) onChanged(v);
       },

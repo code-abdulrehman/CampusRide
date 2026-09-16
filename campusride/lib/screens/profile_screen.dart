@@ -8,9 +8,14 @@ import 'report_screen.dart';
 import 'admin_dashboard_screen.dart';
 import 'login_screen.dart';
 
-class ProfileScreen extends StatelessWidget {
+class ProfileScreen extends StatefulWidget {
   const ProfileScreen({super.key});
 
+  @override
+  State<ProfileScreen> createState() => _ProfileScreenState();
+}
+
+class _ProfileScreenState extends State<ProfileScreen> {
   @override
   Widget build(BuildContext context) {
     final state = context.watch<AppStateProvider>();
@@ -26,7 +31,7 @@ class ProfileScreen extends StatelessWidget {
       );
     }
 
-    final isAdmin = user.userId == 'admin1';
+    final isAdmin = user.isAdmin;
     final myVehicles = state.getMyVehicles();
     final unverifiedVehicles = myVehicles.where((v) => !v.isVerified).length;
 
@@ -38,9 +43,11 @@ class ProfileScreen extends StatelessWidget {
           IconButton(
             icon: const Icon(Icons.logout),
             tooltip: 'Logout',
-            onPressed: () {
-              state.logout();
-              Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const LoginScreen()));
+            onPressed: () async {
+              await state.logout();
+              if (context.mounted) {
+                Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const LoginScreen()));
+              }
             },
           ),
         ],
@@ -115,9 +122,13 @@ class ProfileScreen extends StatelessWidget {
                     title: const Text('Verify Student Account'),
                     subtitle: const Text('Use your registration ID + institute email'),
                     trailing: const Icon(Icons.chevron_right),
-                    onTap: () {
-                      state.submitStudentVerification();
-                      showAppSnack(context, 'Student verification submitted!');
+                    onTap: () async {
+                      try {
+                        await state.submitStudentVerification();
+                        if (context.mounted) showAppSnack(context, 'Student verification submitted!');
+                      } catch (e) {
+                        if (context.mounted) showAppSnack(context, '$e', error: true);
+                      }
                     },
                   ),
                 if (!user.isDriverVerified && user.isStudentVerified)
@@ -126,9 +137,13 @@ class ProfileScreen extends StatelessWidget {
                     title: const Text('Apply to Become a Driver'),
                     subtitle: const Text('Licence + vehicle verification required'),
                     trailing: const Icon(Icons.chevron_right),
-                    onTap: () {
-                      state.submitDriverVerification();
-                      showAppSnack(context, 'Driver verification submitted!');
+                    onTap: () async {
+                      try {
+                        await state.submitDriverVerification();
+                        if (context.mounted) showAppSnack(context, 'Driver verification submitted!');
+                      } catch (e) {
+                        if (context.mounted) showAppSnack(context, '$e', error: true);
+                      }
                     },
                   ),
                 if (user.isDriverVerified)
@@ -191,12 +206,6 @@ class ProfileScreen extends StatelessWidget {
                     subtitle: const Text('Verifications, reports & analytics'),
                     trailing: const Icon(Icons.chevron_right),
                     onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const AdminDashboardScreen())),
-                  ),
-                  const Divider(height: 1),
-                  ListTile(
-                    leading: const Icon(Icons.emergency, color: Colors.red),
-                    title: const Text('Third-party brand demo'),
-                    subtitle: const Text('Placeholder, not required'),
                   ),
                 ],
               ],

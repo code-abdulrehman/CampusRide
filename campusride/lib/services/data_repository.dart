@@ -1,5 +1,6 @@
 import 'dart:math';
 import 'package:flutter/material.dart' show TimeOfDay;
+import '../config/api_config.dart';
 import '../models/enums.dart';
 import '../models/user.dart';
 import '../models/vehicle.dart';
@@ -7,99 +8,488 @@ import '../models/ride.dart';
 import '../models/ride_request.dart';
 import '../models/booking.dart';
 import '../models/rating.dart';
-import '../models/report.dart';
 import '../models/app_notification.dart';
+import '../models/campus.dart';
+import 'api_client.dart';
 
 class DataRepository {
   DataRepository._privateConstructor();
   static final DataRepository instance = DataRepository._privateConstructor();
 
-  final Map<String, CampusUser> _users = {};
-  final Map<String, Vehicle> _vehicles = {};
-  final Map<String, Ride> _rides = {};
-  final Map<String, RideRequest> _rideRequests = {};
-  final Map<String, Booking> _bookings = {};
-  final List<UserRating> _ratings = [];
-  final List<UserReport> _reports = [];
-  final List<AppNotification> _notifications = [];
+  final ApiClient api = ApiClient.instance;
 
-  // Getters
-  List<CampusUser> get users => _users.values.toList();
-  List<Vehicle> get vehicles => _vehicles.values.toList();
-  List<Ride> get rides => _rides.values.toList();
-  List<RideRequest> get rideRequests => _rideRequests.values.toList();
-  List<Booking> get bookings => _bookings.values.toList();
-  List<UserRating> get ratings => _ratings.toList();
-  List<UserReport> get reports => _reports.toList();
-  List<AppNotification> get notifications => _notifications.toList();
+  // --- Auth ---
+  Future<({CampusUser user, String accessToken, String refreshToken})> login(
+    String email,
+    String password,
+  ) async {
+    final res = await api.post(ApiPaths.login, body: {'email': email, 'password': password});
+    final data = res['data'] as Map<String, dynamic>;
+    await _persistSession(data);
+    final user = CampusUser.fromApi(data['user'] as Map<String, dynamic>);
+    return (user: user, accessToken: _token(data, 'accessToken'), refreshToken: _token(data, 'refreshToken'));
+  }
 
-  // --- User Operations ---
-  void addUser(CampusUser user) => _users[user.userId] = user;
-  CampusUser? getUserById(String id) => _users[id];
+  Future<({CampusUser user, String accessToken, String refreshToken})> register({
+    required String name,
+    required String email,
+    required String studentId,
+    String? password,
+    String? phone,
+    String? department,
+    String? semester,
+    String? mainCampusId,
+  }) async {
+    final res = await api.post(ApiPaths.register, body: {
+      'fullName': name,
+      'email': email,
+      'password': password ?? 'CampusRide@123',
+      'studentId': studentId,
+      if (phone != null) 'phone': phone,
+      if (department != null) 'department': department,
+      if (semester != null) 'semester': semester,
+      if (mainCampusId != null) 'mainCampusId': mainCampusId,
+    });
+    final data = res['data'] as Map<String, dynamic>;
+    await _persistSession(data);
+    return (user: CampusUser.fromApi(data['user'] as Map<String, dynamic>), accessToken: _token(data, 'accessToken'), refreshToken: _token(data, 'refreshToken'));
+  }
 
-  CampusUser? login(String email, String password) {
+  Future<void> logout(String refreshToken) async {
     try {
-      return _users.values.firstWhere((u) => u.email == email);
+      await api.post(ApiPaths.logout, body: {'refreshToken': refreshToken});
+    } catch (_) {
+      // ignore server errors on logout
+    }
+    await api.clearTokens();
+  }
+
+  Future<void> _persistSession(Map<String, dynamic> data) async {
+    final tokens = data['tokens'] as Map<String, dynamic>;
+    await api.saveTokens(
+      accessToken: tokens['accessToken'] as String,
+      refreshToken: tokens['refreshToken'] as String,
+      expiresIn: tokens['expiresIn'] as String?,
+    );
+  }
+
+  String _token(Map<String, dynamic> data, String key) =>
+      (((data['tokens'] as Map<String, dynamic>)[key]) ?? '') as String;
+
+  // --- Users ---
+  Future<CampusUser> getCurrentUser() async {
+    final res = await api.get(ApiPaths.me);
+    final data = res['data'] as Map<String, dynamic>;
+    if (data.containsKey('user')) {
+      return CampusUser.fromApi(data['user'] as Map<String, dynamic>);
+    }
+    return CampusUser.fromApi(data);
+  }
+
+  Future<Map<String, dynamic>> getBootstrap() async {
+    final res = await api.get(ApiPaths.bootstrap);
+    final data = (res['data'] as Map<String, dynamic>?) ?? {};
+    final campusesRaw = data['campuses'] as List<dynamic>? ?? [];
+    if (campusesRaw.isNotEmpty) {
+      _campuses = campusesRaw.map((c) => Campus.fromApi(c as Map<String, dynamic>)).toList();
+    }
+    return data;
+  }
+
+  Future<CampusUser> updateProfile(CampusUser user) async {
+    final res = await api.put(ApiPaths.profile, body: {
+      'fullName': user.name,
+      'phone': user.phone,
+      'department': user.department,
+      'semester': user.semester,
+    });
+    final data = res['data'] as Map<String, dynamic>;
+    return CampusUser.fromApi(data.containsKey('user') ? data['user'] as Map<String, dynamic> : data);
+  }
+
+  Future<void> setEmergencyContact(String name, String phone) async {
+    await api.patch(ApiPaths.emergencyContact, body: {'contactName': name, 'contactPhone': phone});
+  }
+
+  Future<CampusUser> fetchUser(String userId) async {
+    final res = await api.get('/users/$userId');
+    final data = res['data'] as Map<String, dynamic>;
+    return CampusUser.fromApi(data);
+  }
+
+  List<CampusUser> getVerifiedDrivers() => []; // fetched via search results where needed
+
+  // --- Campuses ---
+  List<Campus> get campuses => _campuses;
+  List<Campus> _campuses = Campus.sampleCampuses;
+
+  Future<List<Campus>> fetchCampuses() async {
+    final res = await api.get(ApiPaths.campuses);
+    final data = res['data'] as List<dynamic>;
+    _campuses = data.map((c) => Campus.fromApi(c as Map<String, dynamic>)).toList();
+    return _campuses;
+  }
+
+  // --- Vehicles ---
+  Future<Vehicle> addVehicle({
+    required String company,
+    required String model,
+    required int modelYear,
+    required String color,
+    required String registrationNumber,
+    required int totalSeats,
+    String vehicleType = 'SEDAN',
+  }) async {
+    final res = await api.post(ApiPaths.vehicles, body: {
+      'company': company,
+      'model': model,
+      'year': modelYear,
+      'color': color,
+      'registrationNumber': registrationNumber,
+      'totalSeats': totalSeats,
+      'passengerCapacity': totalSeats - 1,
+      'vehicleType': vehicleType,
+    });
+    final data = res['data'] as Map<String, dynamic>;
+    return Vehicle.fromApi(data.containsKey('vehicle') ? data['vehicle'] as Map<String, dynamic> : data);
+  }
+
+  Future<List<Vehicle>> getMyVehicles() async {
+    final res = await api.get(ApiPaths.vehicles);
+    final data = res['data'] as List<dynamic>? ?? [];
+    return data.map((v) => Vehicle.fromApi(v as Map<String, dynamic>)).toList();
+  }
+
+  Future<Vehicle?> getVehicleById(String id) async {
+    try {
+      final res = await api.get('${ApiPaths.vehicles}/$id');
+      final data = res['data'] as Map<String, dynamic>;
+      return Vehicle.fromApi(data);
     } catch (_) {
       return null;
     }
   }
 
-  List<CampusUser> getVerifiedDrivers() =>
-      _users.values.where((u) => u.isStudentVerified).toList();
+  List<Vehicle> getVehiclesByOwner(String ownerId) => []; // in-memory cache replaced by getMyVehicles
 
-  // --- Vehicle Operations ---
-  void addVehicle(Vehicle vehicle) => _vehicles[vehicle.vehicleId] = vehicle;
-  Vehicle? getVehicleById(String id) => _vehicles[id];
-  List<Vehicle> getVehiclesByOwner(String ownerId) =>
-      _vehicles.values.where((v) => v.ownerUserId == ownerId).toList();
+  // --- Rides ---
+  Future<Ride> createRide({
+    required String originCampusId,
+    required String destinationCampusId,
+    required String origin,
+    required String destination,
+    required DateTime departureAt,
+    required String vehicleId,
+    required int availableSeats,
+    required double contributionPerSeat,
+    List<String> conditions = const [],
+    String additionalNotes = '',
+    bool recurring = false,
+    List<String> recurringDays = const [],
+  }) async {
+    final res = await api.post(ApiPaths.rides, body: {
+      'originCampusId': originCampusId,
+      'destinationCampusId': destinationCampusId,
+      'origin': origin,
+      'destination': destination,
+      'departureAt': departureAt.toUtc().toIso8601String(),
+      'vehicleId': vehicleId,
+      'availableSeats': availableSeats,
+      'pricePerSeat': contributionPerSeat,
+      'conditions': conditions,
+      'notes': additionalNotes,
+      'recurring': recurring,
+      'recurringDays': recurringDays,
+    });
+    final data = res['data'] as Map<String, dynamic>;
+    return Ride.fromApi(data);
+  }
 
-  // --- Ride Request Operations ---
-  void addRideRequest(RideRequest request) => _rideRequests[request.requestId] = request;
+  Future<Ride?> getRideById(String id) async {
+    try {
+      final res = await api.get(ApiPaths.rideDetail(id));
+      final data = res['data'] as Map<String, dynamic>;
+      return Ride.fromApi(data.containsKey('ride') ? data['ride'] as Map<String, dynamic> : data);
+    } catch (_) {
+      return null;
+    }
+  }
 
-  // --- Ride Operations ---
-  void addRide(Ride ride) => _rides[ride.rideId] = ride;
-  Ride? getRideById(String id) => _rides[id];
-  List<Ride> getRidesByDriver(String driverId) =>
-      _rides.values.where((r) => r.driverId == driverId).toList();
-  List<Ride> getAvailableRides() =>
-      _rides.values.where((r) => r.isAvailable).toList();
+  Future<Map<String, dynamic>> getRideDetail(String id) async {
+    final res = await api.get(ApiPaths.rideDetail(id));
+    return (res['data'] as Map<String, dynamic>?) ?? {};
+  }
 
-  List<Ride> searchRides({
+  Future<List<Ride>> getRidesByDriver(String driverId) async {
+    final res = await api.get(ApiPaths.ridesMine);
+    final data = res['data'] as List<dynamic>? ?? [];
+    return data.map((r) => Ride.fromApi(r as Map<String, dynamic>)).toList();
+  }
+
+  Future<List<Map<String, dynamic>>> searchRides({
     required String fromCampusId,
     required String toCampusId,
     required DateTime date,
     int? maxDepartureHour,
     int? maxDepartureMinutes,
     int seatsNeeded = 1,
-  }) {
-    return _rides.values.where((r) {
-      if (r.originCampusId != fromCampusId) return false;
-      if (r.destinationCampusId != toCampusId) return false;
-      if (!r.isAvailable) return false;
-      if (r.availableSeats < seatsNeeded) return false;
-
-      final rideDate = DateTime(r.departureDate.year, r.departureDate.month, r.departureDate.day);
-      final searchDate = DateTime(date.year, date.month, date.day);
-      if (!rideDate.isAtSameMomentAs(searchDate)) return false;
-
-      if (maxDepartureHour != null) {
-        final maxMinutes = maxDepartureHour * 60 + (maxDepartureMinutes ?? 0);
-        if (r.departureTime.hour * 60 + r.departureTime.minute > maxMinutes) return false;
-      }
-
-      return true;
-    }).toList();
+  }) async {
+    final res = await api.get(ApiPaths.rideSearch, query: {
+      'fromCampusId': fromCampusId,
+      'toCampusId': toCampusId,
+      'date':
+          '${date.year.toString().padLeft(4, '0')}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')}',
+      'seats': seatsNeeded,
+      if (maxDepartureHour != null) 'latestDepartureHour': maxDepartureHour,
+      if (maxDepartureMinutes != null) 'latestDepartureMinutes': maxDepartureMinutes,
+    });
+    final items = ((res['data'] as Map<String, dynamic>?)?['items'] as List<dynamic>? ?? []);
+    return items.map((e) => (e as Map<String, dynamic>)).toList();
   }
 
-  // --- Matching ---
+  Future<Ride> cancelRide(String rideId) async {
+    final res = await api.post(ApiPaths.rideCancel(rideId));
+    final data = res['data'] as Map<String, dynamic>;
+    return Ride.fromApi(data);
+  }
+
+  Future<Ride> startRide(String rideId, {bool checkin = true}) async {
+    final res = await api.post(ApiPaths.rideStart(rideId), body: {'checkin': checkin});
+    final data = res['data'] as Map<String, dynamic>;
+    return Ride.fromApi(data);
+  }
+
+  Future<Ride> completeRide(String rideId) async {
+    final res = await api.post(ApiPaths.rideComplete(rideId));
+    final data = res['data'] as Map<String, dynamic>;
+    return Ride.fromApi(data);
+  }
+
+  // --- Ride Requests ---
+  Future<RideRequest> createRideRequest({
+    required String originCampusId,
+    required String destinationCampusId,
+    required String origin,
+    required String destination,
+    required DateTime earliestDeparture,
+    required DateTime latestDeparture,
+    int requiredSeats = 1,
+    double maxBudget = 300.0,
+    double maxPickupDistanceKm = 2.0,
+  }) async {
+    final res = await api.post(ApiPaths.rideRequests, body: {
+      'originCampusId': originCampusId,
+      'destinationCampusId': destinationCampusId,
+      'earliestDeparture': earliestDeparture.toUtc().toIso8601String(),
+      'latestDeparture': latestDeparture.toUtc().toIso8601String(),
+      'requiredSeats': requiredSeats,
+      'maxBudget': maxBudget,
+      'maxPickupDistanceKm': maxPickupDistanceKm,
+    });
+    final data = res['data'] as Map<String, dynamic>;
+    return RideRequest.fromApi(data.containsKey('rideRequest') ? data['rideRequest'] as Map<String, dynamic> : data);
+  }
+
+  Future<List<RideRequest>> getMyRideRequests() async {
+    final res = await api.get(ApiPaths.rideRequestsMine);
+    final data = res['data'] as List<dynamic>? ?? [];
+    return data.map((r) => RideRequest.fromApi(r as Map<String, dynamic>)).toList();
+  }
+
+  // --- Bookings ---
+  Future<Booking> requestBooking(String rideId, {int seats = 1}) async {
+    final res = await api.post(ApiPaths.bookingForRide(rideId), body: {'seats': seats});
+    final data = res['data'] as Map<String, dynamic>;
+    return Booking.fromApi(data.containsKey('booking') ? data['booking'] as Map<String, dynamic> : data);
+  }
+
+  Future<Booking> acceptBooking(String bookingId) async {
+    final res = await api.post(ApiPaths.bookingAccept(bookingId));
+    final data = res['data'] as Map<String, dynamic>;
+    return Booking.fromApi(data.containsKey('booking') ? data['booking'] as Map<String, dynamic> : data);
+  }
+
+  Future<Booking> rejectBooking(String bookingId) async {
+    final res = await api.post(ApiPaths.bookingReject(bookingId));
+    final data = res['data'] as Map<String, dynamic>;
+    return Booking.fromApi(data.containsKey('booking') ? data['booking'] as Map<String, dynamic> : data);
+  }
+
+  Future<Booking> cancelBooking(String bookingId) async {
+    final res = await api.post(ApiPaths.bookingCancel(bookingId));
+    final data = res['data'] as Map<String, dynamic>;
+    return Booking.fromApi(data.containsKey('booking') ? data['booking'] as Map<String, dynamic> : data);
+  }
+
+  Future<Booking> checkinBooking(String bookingId, String pin) async {
+    final res = await api.post(ApiPaths.bookingCheckin(bookingId), body: {'pin': pin});
+    final data = res['data'] as Map<String, dynamic>;
+    return Booking.fromApi(data.containsKey('booking') ? data['booking'] as Map<String, dynamic> : data);
+  }
+
+  Future<Booking> noShowBooking(String bookingId) async {
+    final res = await api.post(ApiPaths.bookingNoShow(bookingId));
+    final data = res['data'] as Map<String, dynamic>;
+    return Booking.fromApi(data.containsKey('booking') ? data['booking'] as Map<String, dynamic> : data);
+  }
+
+  Future<List<Map<String, dynamic>>> getMyBookings() async {
+    final res = await api.get(ApiPaths.bookingsMine);
+    final data = res['data'] as List<dynamic>? ?? [];
+    return data.map((b) => (b as Map<String, dynamic>)).toList();
+  }
+
+  Future<Booking?> getBookingById(String id) async {
+    try {
+      final res = await api.get(ApiPaths.bookingDetail(id));
+      final data = res['data'] as Map<String, dynamic>;
+      return Booking.fromApi(data.containsKey('booking') ? data['booking'] as Map<String, dynamic> : data);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<List<Map<String, dynamic>>> getBookingsByRide(String rideId) async {
+    final res = await api.get(ApiPaths.rideBookings(rideId));
+    final data = res['data'] as List<dynamic>? ?? [];
+    return data.map((b) => (b as Map<String, dynamic>)).toList();
+  }
+
+  // --- Ratings ---
+  Future<void> submitRating({
+    required String rideId,
+    required String rateeId,
+    required double overallRating,
+    required double punctuality,
+    required double behaviour,
+    required double communication,
+    String comment = '',
+  }) async {
+    await api.post('${ApiPaths.rideDetail(rideId)}/ratings', body: {
+      'rateeId': rateeId,
+      'overallRating': overallRating,
+      'punctuality': punctuality,
+      'behaviour': behaviour,
+      'communication': communication,
+      'comment': comment,
+    });
+  }
+
+  Future<List<UserRating>> getRatingsForUser(String userId) async {
+    final res = await api.get('/users/$userId/ratings');
+    final data = res['data'] as List<dynamic>? ?? [];
+    return data.map((r) => UserRating.fromApi(r as Map<String, dynamic>)).toList();
+  }
+
+  double getAverageRating(String userId) => 0.0; // server provides ratingAverage on user
+
+  // --- Reports ---
+  Future<void> submitReport({
+    required String reportedUserId,
+    String? rideId,
+    required ReportReason reason,
+    required String description,
+  }) async {
+    await api.post(ApiPaths.reportCreate(), body: {
+      'reportedUserId': reportedUserId,
+      if (rideId != null) 'rideId': rideId,
+      'reason': reason.name
+          .replaceAllMapped(RegExp(r'[A-Z]'), (m) => '_${m.group(0)}')
+          .toUpperCase()
+          .replaceFirst('_', ''),
+      'description': description,
+    });
+  }
+
+  // --- Notifications ---
+  Future<List<AppNotification>> getNotificationsForUser(String userId) async {
+    final res = await api.get(ApiPaths.notifications);
+    final data = (res['data'] as Map<String, dynamic>?)?['items'] as List<dynamic>? ?? [];
+    return data.map((n) => AppNotification.fromApi(n as Map<String, dynamic>)).toList();
+  }
+
+  Future<int> getUnreadCount(String userId) async {
+    try {
+      final res = await api.get(ApiPaths.notifications);
+      final items = (res['data'] as Map<String, dynamic>?)?['items'] as List<dynamic>? ?? [];
+      return items.where((n) => (n as Map<String, dynamic>)['readAt'] == null).length;
+    } catch (_) {
+      return 0;
+    }
+  }
+
+  Future<void> markNotificationRead(String notificationId) async {
+    await api.patch(ApiPaths.notificationRead(notificationId));
+  }
+
+  Future<void> markAllNotificationsRead() async {
+    await api.post(ApiPaths.notificationsReadAll);
+  }
+
+  // --- Admin ---
+  Future<Map<String, dynamic>> getAdminDashboard() async {
+    final res = await api.get(ApiPaths.adminDashboard);
+    return (res['data'] as Map<String, dynamic>?) ?? {};
+  }
+
+  Future<List<Map<String, dynamic>>> getAdminUsers() async {
+    final res = await api.get(ApiPaths.adminUsers);
+    final data = (res['data'] as Map<String, dynamic>?)?['items'] as List<dynamic>? ?? [];
+    return data.map((u) => (u as Map<String, dynamic>)).toList();
+  }
+
+  Future<List<Map<String, dynamic>>> getPendingDrivers() async {
+    final res = await api.get('/admin/drivers/pending');
+    final data = (res['data'] as Map<String, dynamic>?)?['items'] as List<dynamic>? ??
+        res['data'] as List<dynamic>? ??
+        [];
+    return data.map((u) => (u as Map<String, dynamic>)).toList();
+  }
+
+  Future<List<Map<String, dynamic>>> getPendingVehicles() async {
+    final res = await api.get('/admin/vehicles/pending');
+    final data = (res['data'] as Map<String, dynamic>?)?['items'] as List<dynamic>? ??
+        res['data'] as List<dynamic>? ??
+        [];
+    return data.map((v) => (v as Map<String, dynamic>)).toList();
+  }
+
+  Future<List<Map<String, dynamic>>> getAdminReports() async {
+    final res = await api.get(ApiPaths.adminReports);
+    final data = (res['data'] as Map<String, dynamic>?)?['items'] as List<dynamic>? ??
+        res['data'] as List<dynamic>? ??
+        [];
+    return data.map((r) => (r as Map<String, dynamic>)).toList();
+  }
+
+  Future<void> adminVerifyStudent(String userId) async {
+    // Student verification is automatic on registration; nothing to do.
+  }
+
+  Future<void> adminVerifyDriver(String userId, {String status = 'VERIFIED'}) async {
+    await api.patch('/admin/drivers/$userId/verification', body: {'status': status});
+  }
+
+  Future<void> adminVerifyVehicle(String vehicleId, {String status = 'VERIFIED'}) async {
+    await api.patch('/admin/vehicles/$vehicleId/verification', body: {'status': status});
+  }
+
+  Future<void> adminSuspendUser(String userId, {bool suspend = true}) async {
+    await api.patch('/admin/users/$userId/status',
+        body: {'accountStatus': suspend ? 'SUSPENDED' : 'ACTIVE'});
+  }
+
+  Future<void> adminResolveReport(String reportId, {String? status, String? adminAction}) async {
+    await api.patch('/admin/reports/$reportId', body: {
+      if (status != null) 'status': status,
+      if (adminAction != null) 'adminAction': adminAction,
+    });
+  }
+
+  // --- Matching helper (client-side fallback when server lacks match data) ---
   double calculateMatchScore(Ride ride, TimeOfDay startTime, TimeOfDay endTime, double budget, String fromCampusId) {
     double score = 0;
-
-    // Route match (30%) - campus to campus
     score += 30.0;
-
-    // Time match (25%)
     final rideTimeMin = ride.departureTime.hour * 60 + ride.departureTime.minute;
     final startMin = startTime.hour * 60 + startTime.minute;
     final endMin = endTime.hour * 60 + endTime.minute;
@@ -109,282 +499,16 @@ class DataRepository {
       final diff = (rideTimeMin - startMin).abs();
       score += max(0, 25.0 - diff * 0.5);
     }
-
-    // Pickup distance (15%) - simplified, assume some distance
     score += 10.0;
-
-    // Budget match (10%)
     if (ride.contributionPerSeat <= budget) {
       score += 10.0;
     } else {
       score += max(0, 10.0 - ((ride.contributionPerSeat - budget) / budget) * 10);
     }
-
-    // Driver rating (10%)
-    final driver = _users[ride.driverId];
-    if (driver != null) {
-      score += (driver.rating / 5.0) * 10.0;
+    score += 16.0;
+    if (ride.driver != null) {
+      score += ((ride.driver!.rating / 5.0) * 9.0).clamp(0, 9);
     }
-
-    // Reliability (10%)
-    if (driver != null) {
-      score += (driver.reliabilityScore / 100.0) * 10.0;
-    }
-
     return score.roundToDouble().clamp(0, 100);
-  }
-
-  List<MapEntry<Ride, double>> findMatchingRides({
-    required String fromCampusId,
-    required String toCampusId,
-    required DateTime date,
-    required TimeOfDay startTime,
-    required TimeOfDay endTime,
-    required double budget,
-    int seatsNeeded = 1,
-  }) {
-    final candidates = searchRides(
-      fromCampusId: fromCampusId,
-      toCampusId: toCampusId,
-      date: date,
-      seatsNeeded: seatsNeeded,
-    );
-
-    final scored = candidates.map((ride) {
-      final score = calculateMatchScore(ride, startTime, endTime, budget, fromCampusId);
-      return MapEntry(ride, score);
-    }).toList();
-
-    scored.sort((a, b) => b.value.compareTo(a.value));
-    return scored;
-  }
-
-  // --- Booking Operations ---
-  void addBooking(Booking booking) => _bookings[booking.bookingId] = booking;
-  Booking? getBookingById(String id) => _bookings[id];
-  List<Booking> getBookingsByRide(String rideId) =>
-      _bookings.values.where((b) => b.rideId == rideId).toList();
-  List<Booking> getBookingsByPassenger(String passengerId) =>
-      _bookings.values.where((b) => b.passengerId == passengerId).toList();
-
-  void updateBookingStatus(String bookingId, BookingStatus status) {
-    final booking = _bookings[bookingId];
-    if (booking != null) {
-      booking.status = status;
-    }
-  }
-
-  void updateRideSeats(String rideId, int seatsReduction) {
-    final ride = _rides[rideId];
-    if (ride != null) {
-      ride.availableSeats = (ride.availableSeats - seatsReduction).clamp(0, 99);
-      if (ride.availableSeats == 0) {
-        ride.rideStatus = RideStatus.full;
-      }
-    }
-  }
-
-  // --- Rating Operations ---
-  void addRating(UserRating rating) => _ratings.add(rating);
-  List<UserRating> getRatingsForUser(String userId) =>
-      _ratings.where((r) => r.rateeId == userId).toList();
-
-  double getAverageRating(String userId) {
-    final userRatings = getRatingsForUser(userId);
-    if (userRatings.isEmpty) return 0.0;
-    final sum = userRatings.map((r) => r.overallRating).reduce((a, b) => a + b);
-    return (sum / userRatings.length * 10).roundToDouble() / 10;
-  }
-
-  // --- Report Operations ---
-  void addReport(UserReport report) => _reports.add(report);
-  List<UserReport> getPendingReports() =>
-      _reports.where((r) => r.status == ReportStatus.pending).toList();
-
-  // --- Notification Operations ---
-  void addNotification(AppNotification notification) => _notifications.add(notification);
-  List<AppNotification> getNotificationsForUser(String userId) =>
-      _notifications.where((n) => n.userId == userId).toList();
-  int getUnreadCount(String userId) =>
-      _notifications.where((n) => n.userId == userId && !n.isRead).length;
-
-  void markNotificationRead(String notificationId) {
-    final notif = _notifications.firstWhere((n) => n.id == notificationId, orElse: () => throw Exception('Not found'));
-    notif.isRead = true;
-  }
-
-  // --- Seed Data ---
-  void seedDemoData() {
-    // Campuses are static via Campus.sampleCampuses
-
-    // Users
-    final ahmed = CampusUser(
-      userId: 'u1',
-      name: 'Ahmed Khan',
-      email: 'ahmed@university.edu',
-      phone: '0301-1234567',
-      studentId: 'STU-001',
-      department: 'Computer Science',
-      semester: '6th',
-      mainCampus: 'campus_a',
-      verificationStatus: UserVerificationStatus.driverVerified,
-      rating: 4.8,
-      completedRides: 46,
-      cancelledRides: 1,
-    );
-    final hamza = CampusUser(
-      userId: 'u2',
-      name: 'Hamza Ali',
-      email: 'hamza@university.edu',
-      phone: '0321-7654321',
-      studentId: 'STU-002',
-      department: 'Electrical Engineering',
-      semester: '4th',
-      mainCampus: 'campus_a',
-      verificationStatus: UserVerificationStatus.studentVerified,
-      rating: 4.5,
-      completedRides: 12,
-      cancelledRides: 2,
-    );
-    final usman = CampusUser(
-      userId: 'u3',
-      name: 'Usman Raza',
-      email: 'usman@university.edu',
-      phone: '0333-9876543',
-      studentId: 'STU-003',
-      department: 'Business Admin',
-      semester: '8th',
-      mainCampus: 'main',
-      verificationStatus: UserVerificationStatus.studentVerified,
-      rating: 4.2,
-      completedRides: 30,
-      cancelledRides: 5,
-    );
-    final fatima = CampusUser(
-      userId: 'u4',
-      name: 'Fatima Noor',
-      email: 'fatima@university.edu',
-      phone: '0345-1122334',
-      studentId: 'STU-004',
-      department: 'Data Science',
-      semester: '3rd',
-      mainCampus: 'main',
-      verificationStatus: UserVerificationStatus.studentVerified,
-      rating: 4.9,
-      completedRides: 60,
-      cancelledRides: 0,
-    );
-    final admin = CampusUser(
-      userId: 'admin1',
-      name: 'Admin User',
-      email: 'admin@university.edu',
-      studentId: 'ADM-001',
-      verificationStatus: UserVerificationStatus.driverVerified,
-    );
-
-    for (final u in [ahmed, hamza, usman, fatima, admin]) {
-      addUser(u);
-    }
-
-    // Vehicles
-    final v1 = Vehicle(
-      vehicleId: 'v1',
-      ownerUserId: 'u1',
-      company: 'Honda',
-      model: 'City',
-      modelYear: 2022,
-      color: 'White',
-      registrationNumber: 'LEA-1234',
-      totalSeats: 5,
-      passengerCapacity: 4,
-      verificationStatus: VehicleStatus.verified,
-      vehicleStatus: VehicleStatus.verified,
-    );
-    final v2 = Vehicle(
-      vehicleId: 'v2',
-      ownerUserId: 'u3',
-      company: 'Toyota',
-      model: 'Corolla',
-      modelYear: 2023,
-      color: 'Black',
-      registrationNumber: 'LEB-5678',
-      totalSeats: 5,
-      passengerCapacity: 4,
-      verificationStatus: VehicleStatus.verified,
-      vehicleStatus: VehicleStatus.verified,
-    );
-    addVehicle(v1);
-    addVehicle(v2);
-
-    // Rides
-    final now = DateTime.now();
-    final tomorrow = DateTime(now.year, now.month, now.day + 1);
-
-    final r1 = Ride(
-      rideId: 'r1',
-      driverId: 'u1',
-      vehicleId: 'v1',
-      origin: 'Campus A',
-      destination: 'Main Campus',
-      originCampusId: 'campus_a',
-      destinationCampusId: 'main',
-      departureDate: tomorrow,
-      departureTime: DateTime(tomorrow.year, tomorrow.month, tomorrow.day, 8, 0),
-      expectedArrivalTime: DateTime(tomorrow.year, tomorrow.month, tomorrow.day, 8, 45),
-      availableSeats: 3,
-      contributionPerSeat: 200,
-      conditions: ['No smoking', 'University students only', 'No food inside vehicle'],
-      additionalNotes: 'I will leave sharp at 8:05 AM.',
-    );
-
-    final r2 = Ride(
-      rideId: 'r2',
-      driverId: 'u3',
-      vehicleId: 'v2',
-      origin: 'Campus A',
-      destination: 'Main Campus',
-      originCampusId: 'campus_a',
-      destinationCampusId: 'main',
-      departureDate: tomorrow,
-      departureTime: DateTime(tomorrow.year, tomorrow.month, tomorrow.day, 8, 30),
-      expectedArrivalTime: DateTime(tomorrow.year, tomorrow.month, tomorrow.day, 9, 15),
-      availableSeats: 2,
-      contributionPerSeat: 250,
-      conditions: ['University students only'],
-    );
-
-    addRide(r1);
-    addRide(r2);
-
-    // Seed a sample ride request
-    final req1 = RideRequest(
-      requestId: 'req1',
-      studentId: 'u2',
-      origin: 'Campus A',
-      destination: 'Main Campus',
-      preferredDate: tomorrow,
-      preferredStartTime: const TimeOfDay(hour: 7, minute: 45),
-      latestDepartureTime: const TimeOfDay(hour: 8, minute: 30),
-      requiredArrivalTime: DateTime(tomorrow.year, tomorrow.month, tomorrow.day, 9, 0),
-      requiredSeats: 1,
-      maximumBudget: 250,
-    );
-    _rideRequests[req1.requestId] = req1;
-
-    // Notifications
-    addNotification(AppNotification(
-      id: 'notif1',
-      userId: 'u2',
-      title: 'Ride Found!',
-      message: 'Ahmed has a ride at 8:00 AM from Campus A to Main Campus. 92% match!',
-      type: AppNotificationType.general,
-    ));
-    addNotification(AppNotification(
-      id: 'notif2',
-      userId: 'u1',
-      title: 'New Ride Request',
-      message: 'Ali has requested a seat on your 8:00 AM ride.',
-      type: AppNotificationType.rideRequest,
-    ));
   }
 }

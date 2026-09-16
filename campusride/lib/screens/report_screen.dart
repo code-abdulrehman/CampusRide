@@ -17,7 +17,23 @@ class ReportScreen extends StatefulWidget {
 class _ReportScreenState extends State<ReportScreen> {
   ReportReason _reason = ReportReason.dangerousDriving;
   final _descriptionController = TextEditingController();
-  String? _targetUserId;
+  final _userIdController = TextEditingController();
+  bool _submitting = false;
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.presetUserId != null) {
+      _userIdController.text = widget.presetUserId!;
+    }
+  }
+
+  @override
+  void dispose() {
+    _descriptionController.dispose();
+    _userIdController.dispose();
+    super.dispose();
+  }
 
   static const _reasons = [
     (ReportReason.dangerousDriving, 'Dangerous driving'),
@@ -31,51 +47,54 @@ class _ReportScreenState extends State<ReportScreen> {
     (ReportReason.other, 'Other'),
   ];
 
-  @override
-  void initState() {
-    super.initState();
-    _targetUserId = widget.presetUserId;
-  }
-
-  @override
-  void dispose() {
-    _descriptionController.dispose();
-    super.dispose();
-  }
-
-  void _submit() {
-    if (_targetUserId == null) {
-      showAppSnack(context, 'Please select a user to report.', error: true);
+  Future<void> _submit() async {
+    final userId = _userIdController.text.trim();
+    if (userId.isEmpty) {
+      showAppSnack(context, 'Enter the User ID of the person to report.', error: true);
       return;
     }
-    context.read<AppStateProvider>().submitReport(
-          reportedUserId: _targetUserId!,
-          rideId: widget.presetRideId,
-          reason: _reason,
-          description: _descriptionController.text.trim(),
-        );
-    Navigator.of(context).pop();
-    showAppSnack(context, 'Report submitted. Admin will review it.');
+    setState(() => _submitting = true);
+    try {
+      await context.read<AppStateProvider>().submitReport(
+            reportedUserId: userId,
+            rideId: widget.presetRideId,
+            reason: _reason,
+            description: _descriptionController.text.trim(),
+          );
+      if (!mounted) return;
+      Navigator.of(context).pop();
+      showAppSnack(context, 'Report submitted. Admin will review it.');
+    } catch (e) {
+      if (!mounted) return;
+      showAppSnack(context, '$e', error: true);
+    } finally {
+      if (mounted) setState(() => _submitting = false);
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    final state = context.watch<AppStateProvider>();
-    final users = state.repository.users.where((u) => u.userId != state.currentUser?.userId).toList();
-
     return Scaffold(
       appBar: AppBar(title: const Text('Report an Issue')),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          const Text('Choose the user involved in the incident.', style: TextStyle(fontWeight: FontWeight.w700)),
-          const SizedBox(height: 10),
-          DropdownButtonFormField<String>(
-            initialValue: _targetUserId,
-            decoration: const InputDecoration(labelText: 'User', prefixIcon: Icon(Icons.person_outline)),
-            items: users.map((u) => DropdownMenuItem(value: u.userId, child: Text(u.name))).toList(),
-            onChanged: (v) => setState(() => _targetUserId = v),
+          const Text('User to report', style: TextStyle(fontWeight: FontWeight.w700)),
+          const SizedBox(height: 8),
+          TextField(
+            controller: _userIdController,
+            enabled: widget.presetUserId == null,
+            decoration: const InputDecoration(
+              labelText: 'User ID',
+              hintText: 'Paste the user ID here',
+              prefixIcon: Icon(Icons.person_outline),
+            ),
           ),
+          if (widget.presetUserId != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Text(widget.presetUserId!, style: TextStyle(color: Colors.grey.shade500, fontSize: 12)),
+            ),
           const SizedBox(height: 16),
           const Text('Reason', style: TextStyle(fontWeight: FontWeight.w700)),
           const SizedBox(height: 8),
@@ -103,9 +122,11 @@ class _ReportScreenState extends State<ReportScreen> {
           ),
           const SizedBox(height: 20),
           FilledButton.icon(
-            onPressed: _submit,
+            onPressed: _submitting ? null : _submit,
             style: FilledButton.styleFrom(backgroundColor: Colors.red.shade700),
-            icon: const Icon(Icons.report),
+            icon: _submitting
+                ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                : const Icon(Icons.report),
             label: const Text('Submit Report'),
           ),
         ],

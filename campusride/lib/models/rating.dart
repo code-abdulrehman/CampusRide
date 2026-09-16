@@ -22,4 +22,20 @@ class UserRating {
     this.comment = '',
     DateTime? createdAt,
   }) : createdAt = createdAt ?? DateTime.now();
+
+  factory UserRating.fromApi(Map<String, dynamic> json) {
+    final reviewer = json['reviewer'] as Map<String, dynamic>?;
+    return UserRating(
+      ratingId: (json['id'] ?? json['ratingId']) as String,
+      rideId: (json['rideId'] ?? '') as String,
+      raterId: (reviewer?['id'] ?? json['raterId'] ?? '') as String,
+      rateeId: (reviewer?['id'] ?? json['rateeId'] ?? '') as String,
+      overallRating: ((json['overall'] ?? json['overallRating'] ?? 0) as num).toDouble(),
+      punctuality: ((json['punctuality'] ?? 0) as num).toDouble(),
+      behaviour: ((json['behaviour'] ?? 0) as num).toDouble(),
+      communication: ((json['communication'] ?? 0) as num).toDouble(),
+      comment: (json['comment'] ?? '') as String,
+      createdAt: DateTime.tryParse((json['createdAt'] ?? '').toString()),
+    );
+  }
 }

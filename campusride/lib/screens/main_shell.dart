@@ -21,7 +21,7 @@ class _MainShellState extends State<MainShell> {
 
   bool get _isAdmin {
     final user = context.read<AppStateProvider>().currentUser;
-    return user?.userId == 'admin1';
+    return user?.isAdmin ?? false;
   }
 
   @override
@@ -46,7 +46,7 @@ class _MainShellState extends State<MainShell> {
           const NavigationDestination(icon: Icon(Icons.person_outline), selectedIcon: Icon(Icons.person), label: 'Profile'),
           Consumer<AppStateProvider>(
             builder: (context, state, _) {
-              final count = state.repository.getUnreadCount(state.currentUser?.userId ?? '');
+              final count = state.unreadCount;
               return NavigationDestination(
                 icon: Badge(
                   isLabelVisible: count > 0,
